@@ -1,0 +1,850 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#17222e">
+<title>青年部アプリ</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="青年部">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
+  :root{
+    --navy:#17222e; --navy2:#2b3a4a; --red:#c0392b; --paper:#fff;
+    --bg:#f5f3f0; --line:#e0dcd6; --muted:#6b7480; --ok:#3f8f5b;
+    --sans:"Hiragino Sans","Yu Gothic",sans-serif;
+    --serif:"Hiragino Mincho ProN","Yu Mincho",serif;
+  }
+  html,body{height:100%;}
+  body{
+    background:var(--bg); color:var(--navy); font-family:var(--sans);
+    font-size:15px; line-height:1.7; -webkit-text-size-adjust:100%;
+    overscroll-behavior-y:none;
+  }
+  .hidden{display:none !important;}
+  button{font-family:inherit;font-size:inherit;cursor:pointer;border:none;}
+  input,select,textarea{font-family:inherit;font-size:16px;width:100%;
+    padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--navy);}
+  input:focus,select:focus,textarea:focus{outline:2px solid var(--navy);outline-offset:-1px;}
+  label{display:block;font-size:13px;color:var(--muted);margin:14px 0 5px;font-weight:600;}
+
+  .btn{background:var(--navy);color:#fff;padding:13px 20px;border-radius:8px;font-weight:700;width:100%;}
+  .btn:active{opacity:.8;}
+  .btn.red{background:var(--red);}
+  .btn.ghost{background:#fff;color:var(--navy);border:1.5px solid var(--line);}
+  .btn.sm{width:auto;padding:8px 16px;font-size:13px;border-radius:6px;}
+
+  /* ---------- ログイン ---------- */
+  #loginView{min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:24px;background:var(--navy);}
+  .card{background:#fff;border-radius:16px;padding:32px 24px;width:100%;max-width:400px;}
+  .logo{text-align:center;margin-bottom:20px;}
+  .logo h1{font-family:var(--serif);font-size:22px;margin-top:10px;}
+  .logo p{font-size:12px;color:var(--muted);letter-spacing:.1em;}
+
+  .err{background:#fdf0ee;color:var(--red);border-radius:8px;padding:11px 14px;
+    font-size:13.5px;margin-top:14px;line-height:1.6;}
+
+  /* ---------- 共通レイアウト ---------- */
+  header.bar{
+    position:sticky;top:0;z-index:20;background:var(--navy);color:#fff;
+    padding:calc(env(safe-area-inset-top) + 12px) 16px 12px;
+    display:flex;align-items:center;justify-content:space-between;gap:10px;
+  }
+  header.bar .me{font-size:13px;line-height:1.4;}
+  header.bar .me b{font-size:15px;display:block;}
+  header.bar .me span{color:#9fb0c0;font-size:11px;}
+  .logout{background:transparent;color:#9fb0c0;font-size:12px;padding:6px 10px;
+    border:1px solid #3b4d60;border-radius:6px;}
+
+  nav.tabs{position:sticky;top:0;z-index:19;display:flex;background:#fff;border-bottom:1px solid var(--line);}
+  nav.tabs button{flex:1;background:none;padding:13px 4px;font-size:13.5px;font-weight:700;
+    color:var(--muted);border-bottom:3px solid transparent;position:relative;}
+  nav.tabs button.on{color:var(--navy);border-bottom-color:var(--red);}
+  .dot{display:inline-block;min-width:18px;height:18px;line-height:18px;background:var(--red);
+    color:#fff;border-radius:9px;font-size:11px;margin-left:4px;padding:0 5px;vertical-align:1px;}
+
+  main{padding:16px 16px calc(env(safe-area-inset-bottom) + 40px);max-width:720px;margin:0 auto;}
+  h2.sec{font-family:var(--serif);font-size:18px;margin:18px 0 10px;}
+  h2.sec:first-child{margin-top:4px;}
+  .empty{color:var(--muted);font-size:13.5px;text-align:center;padding:28px 10px;
+    background:#fff;border-radius:10px;border:1px dashed var(--line);}
+
+  /* ---------- カード ---------- */
+  .item{background:#fff;border-radius:10px;padding:14px 16px;margin-bottom:10px;border:1px solid var(--line);}
+  .item.due{border-left:5px solid var(--red);}
+  .item.soon{border-left:5px solid #d89a2b;}
+  .item h3{font-size:15.5px;line-height:1.5;margin-bottom:5px;}
+  .meta{font-size:12.5px;color:var(--muted);display:flex;flex-wrap:wrap;gap:10px;}
+  .meta .hot{color:var(--red);font-weight:700;}
+  .note{font-size:13px;color:var(--navy2);margin-top:7px;padding-top:7px;border-top:1px dashed var(--line);}
+  .row{display:flex;gap:8px;margin-top:11px;align-items:center;}
+  .pill{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;}
+  .pill.todo{background:#eee9e2;color:var(--navy2);}
+  .pill.doing{background:#3f6f8f;color:#fff;}
+  .pill.done{background:var(--ok);color:#fff;}
+  .chk{background:var(--ok);color:#fff;font-size:12px;padding:5px 12px;border-radius:20px;font-weight:700;}
+
+  /* ---------- 管理 ---------- */
+  .subtabs{display:flex;gap:6px;overflow-x:auto;margin-bottom:14px;padding-bottom:2px;}
+  .subtabs button{background:#fff;border:1px solid var(--line);border-radius:20px;
+    padding:7px 14px;font-size:13px;white-space:nowrap;color:var(--muted);font-weight:600;}
+  .subtabs button.on{background:var(--navy);color:#fff;border-color:var(--navy);}
+  .panel{background:#fff;border-radius:10px;padding:16px;border:1px solid var(--line);margin-bottom:16px;}
+  .panel h3{font-size:14px;margin-bottom:2px;}
+  .panel h3 + p{font-size:12.5px;color:var(--muted);margin-bottom:6px;}
+  .mini{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.6;}
+  .readrow{display:flex;justify-content:space-between;gap:10px;font-size:13px;
+    padding:7px 0;border-bottom:1px dashed var(--line);}
+  .readrow:last-child{border-bottom:none;}
+  .yes{color:var(--ok);font-weight:700;}
+  .no{color:var(--red);font-weight:700;}
+
+  /* ---------- 同意 ---------- */
+  #consentView{min-height:100dvh;padding:28px 20px calc(env(safe-area-inset-bottom) + 28px);
+    background:#fff;max-width:600px;margin:0 auto;}
+  #consentView h1{font-family:var(--serif);font-size:21px;margin-bottom:6px;}
+  #consentView .lead{font-size:13.5px;color:var(--muted);margin-bottom:18px;}
+  .cbox{background:var(--bg);border-radius:10px;padding:16px;font-size:13.5px;line-height:1.85;}
+  .cbox b{color:var(--red);}
+  .cbox ul{margin:6px 0 12px 1.2em;}
+  .cbox li{margin-bottom:3px;}
+
+  .spin{text-align:center;padding:60px 20px;color:var(--muted);font-size:14px;}
+</style>
+</head>
+<body>
+
+<!-- ========== 起動中 ========== -->
+<div id="bootView" class="spin">読み込み中…</div>
+
+<!-- ========== ログイン ========== -->
+<div id="loginView" class="hidden">
+  <div class="card">
+    <div class="logo">
+      <svg width="64" height="64" viewBox="0 0 64 64" style="display:block;margin:0 auto;">
+        <line x1="32" y1="5" x2="32" y2="13" stroke="#17222e" stroke-width="2.6" stroke-linecap="round"/>
+        <circle cx="32" cy="5" r="3.4" fill="#c0392b"/>
+        <rect x="11" y="13" width="42" height="33" rx="9.5" fill="#17222e"/>
+        <rect x="19" y="22" width="10" height="10" rx="5" fill="#fff"/>
+        <rect x="35" y="22" width="10" height="10" rx="5" fill="#fff"/>
+        <circle cx="24" cy="27" r="3" fill="#17222e"/>
+        <circle cx="40" cy="27" r="3" fill="#17222e"/>
+        <rect x="25" y="37" width="14" height="3.4" rx="1.7" fill="#c0392b"/>
+        <rect x="20" y="48" width="24" height="8" rx="3.4" fill="#2b3a4a"/>
+      </svg>
+      <h1>青年部アプリ</h1>
+      <p>TASK &amp; SCHEDULE</p>
+    </div>
+    <label for="fId">ID</label>
+    <input id="fId" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="例）sato">
+    <label for="fPin">暗証番号</label>
+    <input id="fPin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="6桁以上">
+    <div style="margin-top:20px;"><button class="btn" id="btnLogin">ログイン</button></div>
+    <div id="loginErr" class="err hidden"></div>
+    <p style="font-size:12px;color:var(--muted);margin-top:16px;text-align:center;line-height:1.7;">
+      IDと暗証番号は管理者から受け取ってください
+    </p>
+  </div>
+</div>
+
+<!-- ========== 同意 ========== -->
+<div id="consentView" class="hidden">
+  <h1>はじめに</h1>
+  <p class="lead">このアプリの使い方についてのご案内です。</p>
+  <div class="cbox">
+    <p><b>このアプリで扱う情報</b></p>
+    <ul>
+      <li>表示名（あなたの名前）</li>
+      <li>担当タスクと、その進み具合</li>
+      <li><b>いつ確認したかの記録</b></li>
+    </ul>
+    <p><b>使いみち</b></p>
+    <ul>
+      <li>青年部の連絡・タスク・予定の共有</li>
+      <li>管理者が、連絡が行き渡っているかを把握するため</li>
+    </ul>
+    <p><b>取り扱い</b></p>
+    <ul>
+      <li>確認の記録を見られるのは<b>管理者だけ</b>です（部員どうしでは見えません）</li>
+      <li>電話番号・住所・メールアドレスは<b>集めません</b></li>
+      <li>不要になった時点で削除します</li>
+    </ul>
+  </div>
+  <div style="margin-top:22px;"><button class="btn" id="btnConsent">確認しました</button></div>
+  <div style="margin-top:10px;"><button class="btn ghost" id="btnConsentNo">同意せずログアウト</button></div>
+  <div id="consentErr" class="err hidden"></div>
+</div>
+
+<!-- ========== 本体 ========== -->
+<div id="appView" class="hidden">
+  <header class="bar">
+    <div class="me">
+      <b id="meName">—</b>
+      <span id="meRole"></span>
+    </div>
+    <button class="logout" id="btnLogout">ログアウト</button>
+  </header>
+
+  <nav class="tabs">
+    <button data-tab="task" class="on">タスク<span id="badgeTask" class="dot hidden">0</span></button>
+    <button data-tab="sche">予定<span id="badgeSche" class="dot hidden">0</span></button>
+    <button data-tab="admin" id="tabAdmin" class="hidden">管理</button>
+  </nav>
+
+  <main>
+    <!-- タスク -->
+    <section id="paneTask">
+      <div id="taskList"></div>
+    </section>
+
+    <!-- 予定 -->
+    <section id="paneSche" class="hidden">
+      <div id="scheList"></div>
+    </section>
+
+    <!-- 管理 -->
+    <section id="paneAdmin" class="hidden">
+      <div class="subtabs">
+        <button data-sub="mem" class="on">メンバー</button>
+        <button data-sub="tsk">タスク</button>
+        <button data-sub="sch">予定</button>
+        <button data-sub="rd">確認状況</button>
+      </div>
+
+      <!-- メンバー -->
+      <div id="subMem">
+        <div class="panel">
+          <h3>メンバーを追加</h3>
+          <p>IDと暗証番号を発行して、本人に伝えてください。</p>
+          <label>表示名</label>
+          <input id="nmName" type="text" placeholder="例）佐藤">
+          <label>ID（半角英数）</label>
+          <input id="nmId" type="text" autocapitalize="none" spellcheck="false" placeholder="例）sato">
+          <label>暗証番号（6桁以上の数字）</label>
+          <input id="nmPin" type="text" inputmode="numeric" placeholder="例）123456">
+          <div style="margin-top:16px;"><button class="btn" id="btnAddMember">追加する</button></div>
+          <div id="memErr" class="err hidden"></div>
+          <p class="mini">※ 暗証番号は後から変更できません。忘れた場合は新しいIDを発行してください。</p>
+        </div>
+        <h2 class="sec">メンバー一覧</h2>
+        <div id="memList"></div>
+      </div>
+
+      <!-- タスク管理 -->
+      <div id="subTsk" class="hidden">
+        <div class="panel">
+          <h3>タスクを追加</h3>
+          <label>内容</label>
+          <input id="tkTitle" type="text" placeholder="例）10月号アンケート設置">
+          <label>担当</label>
+          <select id="tkWho"></select>
+          <label>締切</label>
+          <input id="tkDue" type="date">
+          <label>備考（任意）</label>
+          <input id="tkNote" type="text" placeholder="">
+          <div style="margin-top:16px;"><button class="btn" id="btnAddTask">追加する</button></div>
+          <div id="tskErr" class="err hidden"></div>
+        </div>
+        <h2 class="sec">タスク一覧</h2>
+        <div id="admTaskList"></div>
+      </div>
+
+      <!-- 予定管理 -->
+      <div id="subSch" class="hidden">
+        <div class="panel">
+          <h3>予定を追加</h3>
+          <label>内容</label>
+          <input id="scTitle" type="text" placeholder="例）定例会">
+          <label>日付</label>
+          <input id="scDate" type="date">
+          <label>場所・備考（任意）</label>
+          <input id="scNote" type="text" placeholder="">
+          <div style="margin-top:16px;"><button class="btn" id="btnAddSche">追加する</button></div>
+          <div id="schErr" class="err hidden"></div>
+        </div>
+        <h2 class="sec">予定一覧</h2>
+        <div id="admScheList"></div>
+      </div>
+
+      <!-- 確認状況 -->
+      <div id="subRd" class="hidden">
+        <p class="mini" style="margin-bottom:12px;">
+          誰が確認済みで、誰が未確認かの一覧です。管理者だけが見られます。
+        </p>
+        <div id="readList"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js";
+import {
+  getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword,
+  signOut, onAuthStateChanged
+} from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
+import {
+  getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc,
+  updateDoc, query, where, serverTimestamp
+} from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
+
+/* ===== 設定 ===== */
+const firebaseConfig = {
+  apiKey: "AIzaSyB91rmaTLGGC1XSVWsRHjh4AKLAMS8G7DQ",
+  authDomain: "ajramiyazaki-dx.firebaseapp.com",
+  projectId: "ajramiyazaki-dx",
+  storageBucket: "ajramiyazaki-dx.firebasestorage.app",
+  messagingSenderId: "819068699473",
+  appId: "1:819068699473:web:66c31df1c555cb517b0970"
+};
+const MAIL_DOMAIN = "youth.local";   // ID を内部的にメール形式へ変換するための固定文字列
+const CONSENT_VERSION = "1.0";
+
+const app  = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db   = getFirestore(app);
+
+/* ===== 状態 ===== */
+let me = null;          // { uid, displayName, isAdmin, status }
+let cacheMembers = [];  // 管理者用
+let myReads = new Set();
+
+/* ===== 小道具 ===== */
+const $  = (s) => document.querySelector(s);
+const $$ = (s) => document.querySelectorAll(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+const show = (el) => el.classList.remove("hidden");
+const hide = (el) => el.classList.add("hidden");
+const idToMail = (id) => `${id.trim().toLowerCase()}@${MAIL_DOMAIN}`;
+
+function showErr(el, msg){ el.textContent = msg; show(el); }
+function clearErr(el){ hide(el); el.textContent = ""; }
+
+function todayStr(){
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+function daysLeft(due){
+  if(!due) return null;
+  const a = new Date(due + "T00:00:00");
+  const b = new Date(todayStr() + "T00:00:00");
+  return Math.round((a - b) / 86400000);
+}
+function dueLabel(due){
+  const n = daysLeft(due);
+  if(n === null) return "";
+  if(n < 0)  return `${Math.abs(n)}日超過`;
+  if(n === 0) return "今日まで";
+  if(n === 1) return "明日まで";
+  return `あと${n}日`;
+}
+function fmtDate(s){
+  if(!s) return "";
+  const [y,m,d] = s.split("-");
+  const w = ["日","月","火","水","木","金","土"][new Date(s+"T00:00:00").getDay()];
+  return `${Number(m)}月${Number(d)}日(${w})`;
+}
+function statusPill(st){
+  // 「完了報告」「差戻」は承認フロー（FR-17）を入れる段階で追加する
+  const map = { "未着手":"todo", "完了":"done" };
+  return `<span class="pill ${map[st]||"todo"}">${esc(st||"未着手")}</span>`;
+}
+
+/* 進捗は担当者ひとりひとりで持つ（FR-24）。自分の分だけを見て、自分の分だけを書く */
+const myProgress = (t) => (t.progress || {})[me.uid] || "未着手";
+const doneCount  = (t) => (t.assigneeUids || []).filter(u => (t.progress || {})[u] === "完了").length;
+const taskDone   = (t) => {
+  const ids = t.assigneeUids || [];
+  return ids.length > 0 && doneCount(t) === ids.length;   // 全員が完了して初めてタスク完了
+};
+
+const readKey = (type, id) => `${type}__${id}__${me.uid}`;
+
+/* ===== 認証 ===== */
+$("#btnLogin").addEventListener("click", doLogin);
+$("#fPin").addEventListener("keydown", e => { if(e.key === "Enter") doLogin(); });
+
+async function doLogin(){
+  clearErr($("#loginErr"));
+  const id  = $("#fId").value.trim();
+  const pin = $("#fPin").value;
+  if(!id || !pin){ showErr($("#loginErr"), "IDと暗証番号を入力してください。"); return; }
+  $("#btnLogin").disabled = true;
+  try{
+    await signInWithEmailAndPassword(auth, idToMail(id), pin);
+  }catch(e){
+    const m = String(e.code || "");
+    showErr($("#loginErr"),
+      m.includes("invalid-credential") || m.includes("wrong-password") || m.includes("user-not-found")
+        ? "IDまたは暗証番号が違います。"
+        : m.includes("too-many-requests")
+          ? "試行回数が多すぎます。しばらく待ってからお試しください。"
+          : "ログインできませんでした。通信状況をご確認ください。");
+  }finally{
+    $("#btnLogin").disabled = false;
+  }
+}
+
+$("#btnLogout").addEventListener("click", () => signOut(auth));
+$("#btnConsentNo").addEventListener("click", () => signOut(auth));
+
+onAuthStateChanged(auth, async (user) => {
+  hide($("#bootView"));
+  if(!user){
+    me = null;
+    hide($("#appView")); hide($("#consentView")); show($("#loginView"));
+    $("#fPin").value = "";
+    return;
+  }
+  hide($("#loginView"));
+  try{
+    const snap = await getDoc(doc(db, "members", user.uid));
+    if(!snap.exists()){
+      await signOut(auth);
+      showErr($("#loginErr"), "このアカウントは登録が完了していません。管理者にご確認ください。");
+      return;
+    }
+    const m = snap.data();
+    if(m.status !== "active"){
+      await signOut(auth);
+      showErr($("#loginErr"), "このアカウントは現在ご利用いただけません。");
+      return;
+    }
+    me = { uid:user.uid, displayName:m.displayName || "（名前未設定）", isAdmin: m.isAdmin === true, status:m.status };
+
+    // 同意チェック
+    const cs = await getDocs(query(collection(db,"consents"), where("uid","==",me.uid)));
+    if(cs.empty){ show($("#consentView")); return; }
+    hide($("#consentView"));
+    await startApp();
+  }catch(e){
+    console.error(e);
+    await signOut(auth);
+    showErr($("#loginErr"), "読み込みに失敗しました。もう一度お試しください。");
+  }
+});
+
+/* ===== 同意 ===== */
+$("#btnConsent").addEventListener("click", async () => {
+  clearErr($("#consentErr"));
+  $("#btnConsent").disabled = true;
+  try{
+    await addDoc(collection(db,"consents"), {
+      uid: me.uid,
+      purpose: "青年部の連絡・タスク・予定の共有および確認状況の把握",
+      version: CONSENT_VERSION,
+      agreedAt: serverTimestamp()
+    });
+    hide($("#consentView"));
+    await startApp();
+  }catch(e){
+    console.error(e);
+    showErr($("#consentErr"), "保存に失敗しました。通信状況をご確認ください。");
+  }finally{
+    $("#btnConsent").disabled = false;
+  }
+});
+
+/* ===== 起動 ===== */
+async function startApp(){
+  $("#meName").textContent = me.displayName;
+  $("#meRole").textContent = me.isAdmin ? "管理者" : "";
+  me.isAdmin ? show($("#tabAdmin")) : hide($("#tabAdmin"));
+  show($("#appView"));
+  await loadMyReads();
+  await Promise.all([ renderTasks(), renderSchedules() ]);
+  if(me.isAdmin) await loadMembers();
+}
+
+async function loadMyReads(){
+  myReads = new Set();
+  const s = await getDocs(query(collection(db,"reads"), where("uid","==",me.uid)));
+  s.forEach(d => myReads.add(`${d.data().itemType}__${d.data().itemId}`));
+}
+
+/* ===== タブ ===== */
+$$("nav.tabs button").forEach(b => b.addEventListener("click", () => {
+  $$("nav.tabs button").forEach(x => x.classList.remove("on"));
+  b.classList.add("on");
+  const t = b.dataset.tab;
+  hide($("#paneTask")); hide($("#paneSche")); hide($("#paneAdmin"));
+  if(t === "task") show($("#paneTask"));
+  if(t === "sche") show($("#paneSche"));
+  if(t === "admin"){ show($("#paneAdmin")); loadAdmin(); }
+}));
+
+$$(".subtabs button").forEach(b => b.addEventListener("click", () => {
+  $$(".subtabs button").forEach(x => x.classList.remove("on"));
+  b.classList.add("on");
+  ["mem","tsk","sch","rd"].forEach(k => hide($("#sub" + k[0].toUpperCase() + k.slice(1))));
+  show($("#sub" + b.dataset.sub[0].toUpperCase() + b.dataset.sub.slice(1)));
+  if(b.dataset.sub === "rd") renderReadStatus();
+}));
+
+/* ===== タスク（本人分） ===== */
+async function fetchMyTasks(){
+  const s = await getDocs(query(collection(db,"tasks"), where("assigneeUids","array-contains",me.uid)));
+  const arr = [];
+  s.forEach(d => arr.push({ id:d.id, ...d.data() }));
+  arr.sort((a,b) => (a.dueDate||"9999").localeCompare(b.dueDate||"9999"));
+  return arr;
+}
+
+async function renderTasks(){
+  const list = await fetchMyTasks();
+  const box = $("#taskList");
+  const open = list.filter(t => myProgress(t) !== "完了");
+  const done = list.filter(t => myProgress(t) === "完了");
+  let unread = 0;
+
+  const card = (t) => {
+    const st = myProgress(t);
+    const n = daysLeft(t.dueDate);
+    const cls = st === "完了" ? "" : (n !== null && n < 0 ? " due" : (n !== null && n <= 3 ? " soon" : ""));
+    const isRead = myReads.has(`task__${t.id}`);
+    if(!isRead && st !== "完了") unread++;
+    return `<div class="item${cls}">
+      <h3>${esc(t.title)}</h3>
+      <div class="meta">
+        ${statusPill(st)}
+        ${t.dueDate ? `<span>${fmtDate(t.dueDate)}</span>
+        <span class="${n !== null && n <= 1 ? "hot" : ""}">${dueLabel(t.dueDate)}</span>` : ""}
+      </div>
+      ${t.note ? `<div class="note">${esc(t.note)}</div>` : ""}
+      <div class="row">
+        ${st === "完了"
+          ? `<button class="btn sm ghost" data-undo="${t.id}">完了を取り消す</button>`
+          : `<button class="btn sm ghost" data-done="${t.id}">完了にする</button>`}
+        ${isRead
+          ? `<span class="chk">確認済み</span>`
+          : `<button class="btn sm red" data-read="task__${t.id}">確認しました</button>`}
+      </div>
+    </div>`;
+  };
+
+  box.innerHTML =
+    (open.length ? open.map(card).join("") : `<div class="empty">未完了のタスクはありません</div>`) +
+    (done.length ? `<h2 class="sec">完了したタスク</h2>` + done.map(card).join("") : "");
+
+  badge($("#badgeTask"), unread);
+  bindItemButtons();
+}
+
+/* ===== 予定 ===== */
+async function fetchSchedules(){
+  const s = await getDocs(collection(db,"schedules"));
+  const arr = [];
+  s.forEach(d => arr.push({ id:d.id, ...d.data() }));
+  arr.sort((a,b) => (a.date||"9999").localeCompare(b.date||"9999"));
+  return arr;
+}
+
+async function renderSchedules(){
+  const all = await fetchSchedules();
+  const t = todayStr();
+  const up = all.filter(s => (s.date||"") >= t);
+  const past = all.filter(s => (s.date||"") < t).reverse();
+  let unread = 0;
+
+  const card = (s, isPast) => {
+    const isRead = myReads.has(`schedule__${s.id}`);
+    if(!isRead && !isPast) unread++;
+    return `<div class="item${!isPast && daysLeft(s.date) <= 3 ? " soon" : ""}">
+      <h3>${esc(s.title)}</h3>
+      <div class="meta">
+        <span>${fmtDate(s.date)}</span>
+        ${!isPast && s.date ? `<span class="${daysLeft(s.date) <= 1 ? "hot" : ""}">${dueLabel(s.date)}</span>` : ""}
+      </div>
+      ${s.note ? `<div class="note">${esc(s.note)}</div>` : ""}
+      ${!isPast ? `<div class="row">${isRead
+        ? `<span class="chk">確認済み</span>`
+        : `<button class="btn sm red" data-read="schedule__${s.id}">確認しました</button>`}</div>` : ""}
+    </div>`;
+  };
+
+  $("#scheList").innerHTML =
+    (up.length ? up.map(s => card(s,false)).join("") : `<div class="empty">これからの予定はありません</div>`) +
+    (past.length ? `<h2 class="sec">過去の予定</h2>` + past.slice(0,10).map(s => card(s,true)).join("") : "");
+
+  badge($("#badgeSche"), unread);
+  bindItemButtons();
+}
+
+function badge(el, n){
+  if(n > 0){ el.textContent = n; show(el); } else hide(el);
+}
+
+/* ===== 確認・完了 ===== */
+function bindItemButtons(){
+  $$("[data-read]").forEach(b => { b.onclick = () => markRead(b.dataset.read, b); });
+  $$("[data-done]").forEach(b => { b.onclick = () => setMyProgress(b.dataset.done, "完了", b); });
+  $$("[data-undo]").forEach(b => { b.onclick = () => setMyProgress(b.dataset.undo, "未着手", b); });
+}
+
+async function markRead(key, btn){
+  const [type, id] = key.split("__");
+  btn.disabled = true;
+  try{
+    await setDoc(doc(db, "reads", `${type}__${id}__${me.uid}`), {
+      itemType: type, itemId: id, uid: me.uid, readAt: serverTimestamp()
+    });
+    myReads.add(`${type}__${id}`);
+    type === "task" ? await renderTasks() : await renderSchedules();
+  }catch(e){
+    console.error(e);
+    alert("保存に失敗しました。通信状況をご確認ください。");
+    btn.disabled = false;
+  }
+}
+
+// 書き換えるのは progress の中の「自分のキー」だけ。
+// ドキュメント全体や他のフィールドを触るとFirestoreルールに拒否される。
+async function setMyProgress(taskId, value, btn){
+  btn.disabled = true;
+  try{
+    await updateDoc(doc(db,"tasks",taskId), { [`progress.${me.uid}`]: value });
+    await renderTasks();
+  }catch(e){
+    console.error(e);
+    alert("更新に失敗しました。");
+    btn.disabled = false;
+  }
+}
+
+/* ===== 管理：メンバー ===== */
+async function loadMembers(){
+  const s = await getDocs(collection(db,"members"));
+  cacheMembers = [];
+  s.forEach(d => cacheMembers.push({ uid:d.id, ...d.data() }));
+  cacheMembers.sort((a,b) => (a.displayName||"").localeCompare(b.displayName||"", "ja"));
+}
+
+async function loadAdmin(){
+  await loadMembers();
+  renderMembers();
+  fillWhoSelect();
+  renderAdminTasks();
+  renderAdminSchedules();
+}
+
+function renderMembers(){
+  $("#memList").innerHTML = cacheMembers.length
+    ? cacheMembers.map(m => `<div class="item">
+        <h3>${esc(m.displayName)} ${m.isAdmin ? '<span class="pill doing">管理者</span>' : ""}</h3>
+        <div class="meta">
+          <span>ID：${esc(m.loginId || "—")}</span>
+          <span class="${m.status === "active" ? "yes" : "no"}">${m.status === "active" ? "有効" : "停止中"}</span>
+        </div>
+        ${m.uid !== me.uid ? `<div class="row">
+          <button class="btn sm ghost" data-tog="${m.uid}">${m.status === "active" ? "停止する" : "有効に戻す"}</button>
+        </div>` : ""}
+      </div>`).join("")
+    : `<div class="empty">メンバーがいません</div>`;
+
+  $$("[data-tog]").forEach(b => b.onclick = async () => {
+    const m = cacheMembers.find(x => x.uid === b.dataset.tog);
+    const next = m.status === "active" ? "suspended" : "active";
+    if(!confirm(`${m.displayName} さんを${next === "active" ? "有効に戻し" : "停止し"}ますか？`)) return;
+    b.disabled = true;
+    try{
+      await updateDoc(doc(db,"members",m.uid), { status: next });
+      await loadMembers(); renderMembers(); fillWhoSelect();
+    }catch(e){ console.error(e); alert("更新に失敗しました。"); b.disabled = false; }
+  });
+}
+
+$("#btnAddMember").addEventListener("click", async () => {
+  clearErr($("#memErr"));
+  const name = $("#nmName").value.trim();
+  const id   = $("#nmId").value.trim().toLowerCase();
+  const pin  = $("#nmPin").value.trim();
+
+  if(!name || !id || !pin){ showErr($("#memErr"), "すべて入力してください。"); return; }
+  if(!/^[a-z0-9._-]+$/.test(id)){ showErr($("#memErr"), "IDは半角英数字で入力してください。"); return; }
+  if(pin.length < 6){ showErr($("#memErr"), "暗証番号は6桁以上にしてください。"); return; }
+
+  $("#btnAddMember").disabled = true;
+  let sub = null;
+  try{
+    // 管理者のログインを維持したまま、別インスタンスでユーザーを作る
+    sub = initializeApp(firebaseConfig, "sub_" + Date.now());
+    const subAuth = getAuth(sub);
+    const cred = await createUserWithEmailAndPassword(subAuth, idToMail(id), pin);
+    const newUid = cred.user.uid;
+    await signOut(subAuth);
+
+    await setDoc(doc(db,"members",newUid), {
+      displayName: name, loginId: id, status: "active", isAdmin: false, createdAt: serverTimestamp()
+    });
+
+    $("#nmName").value = ""; $("#nmId").value = ""; $("#nmPin").value = "";
+    await loadMembers(); renderMembers(); fillWhoSelect();
+    alert(`追加しました。\n\n表示名：${name}\nID：${id}\n暗証番号：${pin}\n\nこの内容を本人にお伝えください。`);
+  }catch(e){
+    console.error(e);
+    const c = String(e.code || "");
+    showErr($("#memErr"),
+      c.includes("email-already-in-use") ? "このIDは既に使われています。別のIDにしてください。"
+      : c.includes("weak-password")      ? "暗証番号は6桁以上にしてください。"
+      : c.includes("invalid-email")      ? "IDに使えない文字が含まれています。"
+      : "追加できませんでした。");
+  }finally{
+    $("#btnAddMember").disabled = false;
+  }
+});
+
+function fillWhoSelect(){
+  const act = cacheMembers.filter(m => m.status === "active");
+  $("#tkWho").innerHTML = act.length
+    ? act.map(m => `<option value="${m.uid}">${esc(m.displayName)}</option>`).join("")
+    : `<option value="">（メンバーがいません）</option>`;
+}
+
+/* ===== 管理：タスク ===== */
+$("#btnAddTask").addEventListener("click", async () => {
+  clearErr($("#tskErr"));
+  const title = $("#tkTitle").value.trim();
+  const who   = $("#tkWho").value;
+  const due   = $("#tkDue").value;
+  if(!title || !who){ showErr($("#tskErr"), "内容と担当を入力してください。"); return; }
+  $("#btnAddTask").disabled = true;
+  try{
+    // 担当者は1人でも配列で持つ。progress は全担当者分を「未着手」で初期化する。
+    // 初期化を忘れると、その担当者は自分の進捗を一切変更できなくなる（ルールで拒否される）。
+    await addDoc(collection(db,"tasks"), {
+      title,
+      assigneeUids: [who],
+      progress: { [who]: "未着手" },
+      reworkNotes: {},
+      needsApproval: false,        // 承認要否の切替（FR-25）は次段階。既定はオフ
+      dueDate: due || null, note: $("#tkNote").value.trim() || null,
+      createdBy: me.uid, createdAt: serverTimestamp()
+    });
+    $("#tkTitle").value = ""; $("#tkDue").value = ""; $("#tkNote").value = "";
+    await renderAdminTasks(); await renderTasks();
+  }catch(e){ console.error(e); showErr($("#tskErr"), "追加できませんでした。"); }
+  finally{ $("#btnAddTask").disabled = false; }
+});
+
+async function renderAdminTasks(){
+  const s = await getDocs(collection(db,"tasks"));
+  const arr = [];
+  s.forEach(d => arr.push({ id:d.id, ...d.data() }));
+  arr.sort((a,b) => (a.dueDate||"9999").localeCompare(b.dueDate||"9999"));
+  const nameOf = (uid) => (cacheMembers.find(m => m.uid === uid)?.displayName) || "—";
+
+  $("#admTaskList").innerHTML = arr.length
+    ? arr.map(t => {
+        const ids = t.assigneeUids || [];
+        return `<div class="item">
+        <h3>${esc(t.title)}</h3>
+        <div class="meta">
+          <span class="${taskDone(t) ? "yes" : "no"}">${doneCount(t)}／${ids.length} 完了</span>
+          <span>担当：${esc(ids.map(nameOf).join("、") || "—")}</span>
+          ${t.dueDate ? `<span>${fmtDate(t.dueDate)}</span>` : ""}
+        </div>
+      </div>`;
+      }).join("")
+    : `<div class="empty">タスクがありません</div>`;
+}
+
+/* ===== 管理：予定 ===== */
+$("#btnAddSche").addEventListener("click", async () => {
+  clearErr($("#schErr"));
+  const title = $("#scTitle").value.trim();
+  const date  = $("#scDate").value;
+  if(!title || !date){ showErr($("#schErr"), "内容と日付を入力してください。"); return; }
+  $("#btnAddSche").disabled = true;
+  try{
+    await addDoc(collection(db,"schedules"), {
+      title, date, note: $("#scNote").value.trim() || null,
+      createdBy: me.uid, createdAt: serverTimestamp()
+    });
+    $("#scTitle").value = ""; $("#scDate").value = ""; $("#scNote").value = "";
+    await renderAdminSchedules(); await renderSchedules();
+  }catch(e){ console.error(e); showErr($("#schErr"), "追加できませんでした。"); }
+  finally{ $("#btnAddSche").disabled = false; }
+});
+
+async function renderAdminSchedules(){
+  const arr = await fetchSchedules();
+  $("#admScheList").innerHTML = arr.length
+    ? arr.map(s => `<div class="item">
+        <h3>${esc(s.title)}</h3>
+        <div class="meta"><span>${fmtDate(s.date)}</span></div>
+        ${s.note ? `<div class="note">${esc(s.note)}</div>` : ""}
+      </div>`).join("")
+    : `<div class="empty">予定がありません</div>`;
+}
+
+/* ===== 管理：確認状況 ===== */
+async function renderReadStatus(){
+  const box = $("#readList");
+  box.innerHTML = `<div class="spin">集計中…</div>`;
+  try{
+    const [tS, sS, rS] = await Promise.all([
+      getDocs(collection(db,"tasks")),
+      getDocs(collection(db,"schedules")),
+      getDocs(collection(db,"reads"))
+    ]);
+    const reads = [];
+    rS.forEach(d => reads.push(d.data()));
+    const active = cacheMembers.filter(m => m.status === "active");
+
+    const block = (title, sub, type, id, targets) => {
+      const done = targets.filter(m => reads.some(r => r.itemType===type && r.itemId===id && r.uid===m.uid));
+      const yet  = targets.filter(m => !done.includes(m));
+      return `<div class="item">
+        <h3>${esc(title)}</h3>
+        <div class="meta"><span>${esc(sub)}</span>
+          <span class="${yet.length ? "no" : "yes"}">${done.length}／${targets.length} 確認済み</span></div>
+        <div style="margin-top:9px;">
+          ${targets.map(m => `<div class="readrow">
+            <span>${esc(m.displayName)}</span>
+            <span class="${done.includes(m) ? "yes" : "no"}">${done.includes(m) ? "確認済み" : "未確認"}</span>
+          </div>`).join("")}
+        </div>
+      </div>`;
+    };
+
+    let html = "";
+    const tasks = []; tS.forEach(d => tasks.push({ id:d.id, ...d.data() }));
+    const open  = tasks.filter(t => !taskDone(t))
+                       .sort((a,b) => (a.dueDate||"9999").localeCompare(b.dueDate||"9999"));
+    if(open.length){
+      html += `<h2 class="sec">タスク</h2>`;
+      html += open.map(t => {
+        const ids = t.assigneeUids || [];
+        const who = active.filter(m => ids.includes(m.uid));
+        return block(t.title, `担当：${who.map(m => m.displayName).join("、") || "—"}`, "task", t.id, who);
+      }).join("");
+    }
+
+    const sch = []; sS.forEach(d => sch.push({ id:d.id, ...d.data() }));
+    const up = sch.filter(s => (s.date||"") >= todayStr())
+                  .sort((a,b) => (a.date||"").localeCompare(b.date||""));
+    if(up.length){
+      html += `<h2 class="sec">予定</h2>`;
+      html += up.map(s => block(s.title, fmtDate(s.date), "schedule", s.id, active)).join("");
+    }
+
+    box.innerHTML = html || `<div class="empty">対象がありません</div>`;
+  }catch(e){
+    console.error(e);
+    box.innerHTML = `<div class="empty">読み込みに失敗しました</div>`;
+  }
+}
+
+/* ===== PWA ===== */
+if("serviceWorker" in navigator){
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(e => console.warn("SW:", e));
+  });
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,140 @@
+rules_version = '2';
+
+// 宮崎ひなた青年部 タスク・スケジュール管理アプリ
+// 原則: 既定は全拒否。必要な操作だけを明示的に許可する。
+// 重要: 画面上でボタンを隠すことは防御ではない。防御はこのファイルだけが担う。
+//
+// v6 (2026-07-31)
+//   R-1修正: 承認済み（完了）を本人が取り消せてしまう穴を塞いだ。
+//            現在値も見るようにした。
+//   R-3修正: タスク作成時に必須項目の存在を検証するようにした。
+//            progress の初期化漏れを防ぐ。
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- 判定用のヘルパー ----------
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/members/$(request.auth.uid))
+        && get(/databases/$(database)/documents/members/$(request.auth.uid)).data.isAdmin == true;
+    }
+
+    function isActive() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/members/$(request.auth.uid))
+        && get(/databases/$(database)/documents/members/$(request.auth.uid)).data.status == 'active';
+    }
+
+    // 自分がこのタスクの担当者のひとりか
+    function isAssignee() {
+      return isSignedIn() && request.auth.uid in resource.data.assigneeUids;
+    }
+
+    // 変更しようとしているのが progress の中の「自分の分」だけか
+    function onlyMyProgress() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['progress'])
+        && request.resource.data.progress.diff(resource.data.progress)
+             .affectedKeys().hasOnly([request.auth.uid]);
+    }
+
+    // 自分の進捗を、その値に変えてよいか
+    //
+    // 承認あり（needsApproval: true）
+    //   すでに「完了」＝管理者が承認済み。本人はもう動かせない。
+    //   それ以外なら「未着手（取り消し）」「完了報告」にできる。
+    //
+    // 承認なし（needsApproval: false）
+    //   本人が「完了」まで押せる。押し間違いは「未着手」に戻せる。
+    function allowedStatus() {
+      return resource.data.needsApproval == true
+        ? (resource.data.progress[request.auth.uid] != '完了'
+           && request.resource.data.progress[request.auth.uid] in ['未着手', '完了報告'])
+        : request.resource.data.progress[request.auth.uid] in ['未着手', '完了'];
+    }
+
+    // タスク作成時に、必要な項目が揃っているか
+    // progress の初期化を忘れると、担当者が一切操作できなくなるため必須にする
+    function validNewTask() {
+      return request.resource.data.keys()
+               .hasAll(['title', 'assigneeUids', 'progress', 'needsApproval'])
+        && request.resource.data.assigneeUids.size() > 0
+        && request.resource.data.progress.keys().hasAll(request.resource.data.assigneeUids);
+    }
+
+
+    // ---------- members : アカウント ----------
+    // 表示名が互いの画面に出るため、有効なメンバーは互いに読める。
+    match /members/{uid} {
+      allow read:   if isActive() || isAdmin();
+      allow create: if isAdmin();
+      allow update: if isAdmin()
+                    || (isSelf(uid)
+                        && request.resource.data.diff(resource.data)
+                             .affectedKeys().hasOnly(['fcmToken']));
+      allow delete: if isAdmin();
+    }
+
+
+    // ---------- tasks : タスク ----------
+    // 有効なメンバー全員が読める（共有ボード）。作成・編集・削除は管理者のみ。
+    //
+    // 担当者ができること：
+    //   progress の中の「自分の分」だけを書き換える。
+    //   承認あり → 未着手 ／ 完了報告（承認済みは動かせない）
+    //   承認なし → 未着手 ／ 完了
+    //
+    // 管理者ができること：
+    //   すべて。承認、差戻（理由を書く）、複数人分をまとめて承認も可。
+    match /tasks/{taskId} {
+      allow read:   if isActive() || isAdmin();
+      allow create: if isAdmin() && validNewTask();
+      allow update: if isAdmin()
+                    || (isActive() && isAssignee() && onlyMyProgress() && allowedStatus());
+      allow delete: if isAdmin();
+    }
+
+
+    // ---------- schedules : 予定 ----------
+    match /schedules/{scheduleId} {
+      allow read:  if isActive() || isAdmin();
+      allow write: if isAdmin();
+    }
+
+
+    // ---------- reads : 確認（既読）記録 ----------
+    // 最も敏感な行動データ。閲覧は管理者と本人のみ。
+    match /reads/{readId} {
+      allow create: if isActive()
+                    && isSelf(request.resource.data.uid);
+      allow read:   if isAdmin() || isSelf(resource.data.uid);
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+
+    // ---------- consents : 同意記録 ----------
+    match /consents/{consentId} {
+      allow create: if isSignedIn()
+                    && isSelf(request.resource.data.uid);
+      allow read:   if isSelf(resource.data.uid) || isAdmin();
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+
+    // ---------- 上記以外は全て拒否 ----------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
