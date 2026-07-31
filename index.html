@@ -397,7 +397,7 @@ onAuthStateChanged(auth, async (user) => {
   if(!user){
     me = null;
     hide($("#appView")); hide($("#consentView")); show($("#loginView"));
-    $("#fPin").value = "";
+    $("#fId").value = ""; $("#fPin").value = "";   // 共用端末で前の人のIDを残さない
     return;
   }
   hide($("#loginView"));
@@ -450,7 +450,29 @@ $("#btnConsent").addEventListener("click", async () => {
 });
 
 /* ===== 起動 ===== */
+
+// ログインのたびに画面の表示状態を初期化する。
+// 画面は再読み込みされないため、前のセッションで開いていたタブ・パネルと
+// その中身がそのまま残る。初期化しないと、一般会員でログインし直したときに
+// 管理パネルの中身が見えてしまう。
+function resetView(){
+  // タブは必ず「タスク」から始める
+  $$("nav.tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === "task"));
+  show($("#paneTask")); hide($("#paneSche")); hide($("#paneAdmin"));
+
+  // 管理のサブタブも「メンバー」に戻す
+  $$(".subtabs button").forEach(b => b.classList.toggle("on", b.dataset.sub === "mem"));
+  show($("#subMem")); hide($("#subTsk")); hide($("#subSch")); hide($("#subRd"));
+
+  // 前のセッションで描画した中身を残さない
+  cacheMembers = [];
+  ["#taskList","#scheList","#memList","#admTaskList","#admScheList","#readList"]
+    .forEach(s => { $(s).innerHTML = ""; });
+  hide($("#badgeTask")); hide($("#badgeSche"));
+}
+
 async function startApp(){
+  resetView();
   $("#meName").textContent = me.displayName;
   $("#meRole").textContent = me.isAdmin ? "管理者" : "";
   me.isAdmin ? show($("#tabAdmin")) : hide($("#tabAdmin"));
