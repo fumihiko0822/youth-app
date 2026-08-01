@@ -8,9 +8,16 @@
  *
  * リージョンは asia-northeast1（東京）を明示する。指定しないと既定の
  * 米国リージョンに置かれ、要件定義書 §06「データ所在」の記述と食い違う。
+ *
+ * この関数を動かすには、実行サービスアカウント
+ * （<プロジェクト番号>-compute@developer.gserviceaccount.com）に
+ * 次の2つの権限が要る。近年作られたプロジェクトでは自動で付かない。
+ *   - Cloud Datastore ユーザー（roles/datastore.user）… Firestore の読み書き
+ *   - Firebase Authentication 管理者（roles/firebaseauth.admin）… パスワード変更
  */
 
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const logger = require("firebase-functions/logger");
 const { initializeApp } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
@@ -20,6 +27,58 @@ const db = getFirestore();
 const auth = getAuth();
 
 const REGION = "asia-northeast1";
+
+/* 想定外の例外を、原因が分かる文言に変える。
+   何もしないと画面には「実行できませんでした」としか出ず、引き継いだ人が
+   原因にたどり着けない。よくある設定漏れはそれと分かる文言にし、
+   詳細はログに残す。 */
+function toHttpsError(e, context) {
+  if (e instanceof HttpsError) return e;   // 意図して投げたものはそのまま通す
+
+  logger.error("想定外のエラー", {
+    ...context,
+    code: e && e.code,
+    message: e && e.message,
+    stack: e && e.stack,
+  });
+
+  const code = e && e.code;
+  const text = String((e && e.message) || "");
+
+  // Firestore（gRPC）の権限不足。code 7 = PERMISSION_DENIED
+  if (code === 7 || code === "permission-denied" || text.includes("PERMISSION_DENIED")) {
+    return new HttpsError(
+      "internal",
+      "サーバ側の権限が不足しています。関数の実行アカウント" +
+        "（-compute@developer.gserviceaccount.com）に「Cloud Datastore ユーザー」" +
+        "の権限を付けてください。"
+    );
+  }
+  // Firebase Authentication 側の権限不足
+  if (code === "auth/insufficient-permission") {
+    return new HttpsError(
+      "internal",
+      "サーバ側の権限が不足しています。関数の実行アカウントに" +
+        "「Firebase Authentication 管理者」の権限を付けてください。"
+    );
+  }
+  if (code === "auth/user-not-found") {
+    return new HttpsError(
+      "not-found",
+      "このメンバーのログインアカウントが見つかりません。" +
+        "Authentication 側で削除された可能性があります。"
+    );
+  }
+  if (code === "auth/invalid-password" || code === "auth/weak-password") {
+    return new HttpsError("invalid-argument", "暗証番号は6文字以上にしてください。");
+  }
+
+  return new HttpsError(
+    "internal",
+    "想定外のエラーが発生しました" + (code ? "（" + code + "）" : "") +
+      "。Cloud Functions のログを確認してください。"
+  );
+}
 
 /* 呼び出し元が「有効な管理者」かを確かめ、その情報を返す。
    停止されたアカウントは、isAdmin が true でも通さない。 */
@@ -51,35 +110,150 @@ function writeAuditLog(entry) {
    Auth のパスワードは Admin SDK でしか他人の分を変更できない。
    UID は変わらないため、タスクの担当や確認記録はそのまま引き継がれる。 */
 exports.resetMemberPassword = onCall({ region: REGION }, async (request) => {
-  const me = await requireActiveAdmin(request);
-
+  const callerUid = request.auth && request.auth.uid;
   const targetUid = request.data && request.data.uid;
-  const password = request.data && request.data.password;
+  try {
+    const me = await requireActiveAdmin(request);
+    const password = request.data && request.data.password;
 
-  if (typeof targetUid !== "string" || targetUid === "") {
-    throw new HttpsError("invalid-argument", "対象のメンバーが指定されていません。");
+    if (typeof targetUid !== "string" || targetUid === "") {
+      throw new HttpsError("invalid-argument", "対象のメンバーが指定されていません。");
+    }
+    if (typeof password !== "string" || password.length < 6) {
+      throw new HttpsError("invalid-argument", "暗証番号は6文字以上にしてください。");
+    }
+
+    // このアプリが管理しているアカウントに限る
+    const target = await db.collection("members").doc(targetUid).get();
+    if (!target.exists) {
+      throw new HttpsError("not-found", "対象のメンバーが見つかりません。");
+    }
+
+    await auth.updateUser(targetUid, { password });
+
+    await writeAuditLog({
+      type: "passwordReset",
+      byUid: me.uid,
+      byName: me.displayName,
+      targetUid,
+      targetName: target.data().displayName || "",
+    });
+
+    logger.info("暗証番号を再設定した", { byUid: me.uid, targetUid });
+    return { ok: true };
+  } catch (e) {
+    throw toHttpsError(e, { fn: "resetMemberPassword", callerUid, targetUid });
   }
-  if (typeof password !== "string" || password.length < 6) {
-    throw new HttpsError("invalid-argument", "暗証番号は6文字以上にしてください。");
+});
+
+/* ===== メンバーの完全削除 =====
+   Authentication と Firestore の両方から消す。
+   順序は Auth が先。逆にすると、Firestore だけ消えて Auth が残ったときに
+   一覧から見えなくなり、同じIDで再発行もできなくなる（email-already-in-use）。
+   Auth を先に消しておけば、途中で失敗しても行が残るので押し直せる。
+
+   管理者はそのままでは削除できない。先に「管理者を外す」を通してもらう。
+   こうすると、削除によって管理者が0人になる経路そのものが無くなる。
+   （権限の解除は setMemberAdmin がトランザクションで1人以上を保証している）
+
+   タスクは巻き添えで消さない。担当が全員いなくなったタスクは、管理一覧に
+   「有効な担当者がいません」と出るので、管理者が見て判断する。 */
+exports.deleteMember = onCall({ region: REGION }, async (request) => {
+  const callerUid = request.auth && request.auth.uid;
+  const targetUid = request.data && request.data.uid;
+  try {
+    const me = await requireActiveAdmin(request);
+
+    if (typeof targetUid !== "string" || targetUid === "") {
+      throw new HttpsError("invalid-argument", "対象のメンバーが指定されていません。");
+    }
+    if (targetUid === me.uid) {
+      throw new HttpsError("failed-precondition", "自分自身は削除できません。");
+    }
+
+    const targetRef = db.collection("members").doc(targetUid);
+    const target = await targetRef.get();
+    if (!target.exists) {
+      throw new HttpsError("not-found", "対象のメンバーが見つかりません。");
+    }
+    const targetData = target.data();
+
+    if (targetData.isAdmin === true) {
+      throw new HttpsError(
+        "failed-precondition",
+        "管理者は削除できません。先に「管理者を外す」を実行してください。"
+      );
+    }
+
+    // 1) Authentication を先に消す。すでにいない場合は成功として扱い、
+    //    Firestore の掃除に進む（同じ操作をもう一度押せるようにするため）。
+    try {
+      await auth.deleteUser(targetUid);
+    } catch (e) {
+      if (!e || e.code !== "auth/user-not-found") throw e;
+      logger.warn("Authにアカウントがなかった。掃除だけ続ける", { targetUid });
+    }
+
+    // 2) タスクからこの人への参照を取り除く（タスク自体は消さない）
+    const taskSnap = await db
+      .collection("tasks")
+      .where("assigneeUids", "array-contains", targetUid)
+      .get();
+
+    const writes = [];
+    taskSnap.docs.forEach((d) => {
+      writes.push({
+        op: "update",
+        ref: d.ref,
+        data: {
+          assigneeUids: FieldValue.arrayRemove(targetUid),
+          ["progress." + targetUid]: FieldValue.delete(),
+          ["reworkNotes." + targetUid]: FieldValue.delete(),
+        },
+      });
+    });
+
+    // 3) 確認記録と同意記録を消す（どちらも単一フィールドの検索）
+    const readSnap = await db.collection("reads").where("uid", "==", targetUid).get();
+    readSnap.docs.forEach((d) => writes.push({ op: "delete", ref: d.ref }));
+
+    const consentSnap = await db.collection("consents").where("uid", "==", targetUid).get();
+    consentSnap.docs.forEach((d) => writes.push({ op: "delete", ref: d.ref }));
+
+    // 4) アカウント本体
+    writes.push({ op: "delete", ref: targetRef });
+
+    // バッチの上限は500件。20人規模では届かないが、超えても壊れないよう分割する。
+    for (let i = 0; i < writes.length; i += 400) {
+      const batch = db.batch();
+      writes.slice(i, i + 400).forEach((w) => {
+        if (w.op === "delete") batch.delete(w.ref);
+        else batch.update(w.ref, w.data);
+      });
+      await batch.commit();
+    }
+
+    const counts = {
+      tasks: taskSnap.size,
+      reads: readSnap.size,
+      consents: consentSnap.size,
+    };
+
+    await writeAuditLog({
+      type: "memberDelete",
+      byUid: me.uid,
+      byName: me.displayName,
+      targetUid,
+      targetName: targetData.displayName || "",
+      targetLoginId: targetData.loginId || "",
+      cleaned: counts,
+    });
+
+    logger.info("メンバーを削除した", { byUid: me.uid, targetUid, ...counts });
+    return { ok: true, counts };
+  } catch (e) {
+    throw toHttpsError(e, { fn: "deleteMember", callerUid, targetUid });
   }
-
-  // このアプリが管理しているアカウントに限る
-  const target = await db.collection("members").doc(targetUid).get();
-  if (!target.exists) {
-    throw new HttpsError("not-found", "対象のメンバーが見つかりません。");
-  }
-
-  await auth.updateUser(targetUid, { password });
-
-  await writeAuditLog({
-    type: "passwordReset",
-    byUid: me.uid,
-    byName: me.displayName,
-    targetUid,
-    targetName: target.data().displayName || "",
-  });
-
-  return { ok: true };
 });
 
 /* ===== 管理者権限の付与・解除 =====
@@ -87,58 +261,66 @@ exports.resetMemberPassword = onCall({ region: REGION }, async (request) => {
    トランザクションの中で確かめる。自分自身の解除を禁じるだけでは、2人の管理者が
    同時に互いを解除したときに0人になり得るため。 */
 exports.setMemberAdmin = onCall({ region: REGION }, async (request) => {
-  const me = await requireActiveAdmin(request);
-
+  const callerUid = request.auth && request.auth.uid;
   const targetUid = request.data && request.data.uid;
-  const makeAdmin = request.data && request.data.makeAdmin;
+  try {
+    const me = await requireActiveAdmin(request);
+    const makeAdmin = request.data && request.data.makeAdmin;
 
-  if (typeof targetUid !== "string" || targetUid === "") {
-    throw new HttpsError("invalid-argument", "対象のメンバーが指定されていません。");
-  }
-  if (typeof makeAdmin !== "boolean") {
-    throw new HttpsError("invalid-argument", "付与か解除かが指定されていません。");
-  }
-  if (targetUid === me.uid) {
-    throw new HttpsError("failed-precondition", "自分自身の管理者権限は変更できません。");
-  }
-
-  const targetRef = db.collection("members").doc(targetUid);
-  let targetName = "";
-
-  await db.runTransaction(async (tx) => {
-    // トランザクションでは、読み取りをすべて済ませてから書き込む
-    const target = await tx.get(targetRef);
-    if (!target.exists) {
-      throw new HttpsError("not-found", "対象のメンバーが見つかりません。");
+    if (typeof targetUid !== "string" || targetUid === "") {
+      throw new HttpsError("invalid-argument", "対象のメンバーが指定されていません。");
     }
-    targetName = target.data().displayName || "";
+    if (typeof makeAdmin !== "boolean") {
+      throw new HttpsError("invalid-argument", "付与か解除かが指定されていません。");
+    }
+    if (targetUid === me.uid) {
+      throw new HttpsError("failed-precondition", "自分自身の管理者権限は変更できません。");
+    }
 
-    if (!makeAdmin) {
-      // status での絞り込みはコード側で行う（複合インデックスを避ける方針を維持）
-      const admins = await tx.get(
-        db.collection("members").where("isAdmin", "==", true)
-      );
-      const remaining = admins.docs.filter(
-        (d) => d.id !== targetUid && d.data().status === "active"
-      ).length;
-      if (remaining < 1) {
-        throw new HttpsError(
-          "failed-precondition",
-          "管理者が0人になるため解除できません。先に別のメンバーを管理者にしてください。"
-        );
+    const targetRef = db.collection("members").doc(targetUid);
+    let targetName = "";
+
+    await db.runTransaction(async (tx) => {
+      // トランザクションでは、読み取りをすべて済ませてから書き込む
+      const target = await tx.get(targetRef);
+      if (!target.exists) {
+        throw new HttpsError("not-found", "対象のメンバーが見つかりません。");
       }
-    }
+      targetName = target.data().displayName || "";
 
-    tx.update(targetRef, { isAdmin: makeAdmin });
-  });
+      if (!makeAdmin) {
+        // status での絞り込みはコード側で行う（複合インデックスを避ける方針を維持）
+        const admins = await tx.get(
+          db.collection("members").where("isAdmin", "==", true)
+        );
+        const remaining = admins.docs.filter(
+          (d) => d.id !== targetUid && d.data().status === "active"
+        ).length;
+        if (remaining < 1) {
+          throw new HttpsError(
+            "failed-precondition",
+            "管理者が0人になるため解除できません。先に別のメンバーを管理者にしてください。"
+          );
+        }
+      }
 
-  await writeAuditLog({
-    type: makeAdmin ? "adminGrant" : "adminRevoke",
-    byUid: me.uid,
-    byName: me.displayName,
-    targetUid,
-    targetName,
-  });
+      tx.update(targetRef, { isAdmin: makeAdmin });
+    });
 
-  return { ok: true };
+    await writeAuditLog({
+      type: makeAdmin ? "adminGrant" : "adminRevoke",
+      byUid: me.uid,
+      byName: me.displayName,
+      targetUid,
+      targetName,
+    });
+
+    logger.info(makeAdmin ? "管理者権限を付与した" : "管理者権限を解除した", {
+      byUid: me.uid,
+      targetUid,
+    });
+    return { ok: true };
+  } catch (e) {
+    throw toHttpsError(e, { fn: "setMemberAdmin", callerUid, targetUid });
+  }
 });

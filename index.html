@@ -873,11 +873,14 @@ async function loadAdmin(){
    ここでのボタンの出し分けは操作性のためで、防御ではない。 */
 const callResetPassword = httpsCallable(fns, "resetMemberPassword");
 const callSetAdmin      = httpsCallable(fns, "setMemberAdmin");
+const callDeleteMember  = httpsCallable(fns, "deleteMember");
 
-// 関数が返した文言をそのまま出す。想定外のときだけ一般的な文言にする。
+// 関数が付けた説明はそのまま出す。原因が分かる文言を関数側で作っているため、
+// コードが internal でも握りつぶさない。素の "INTERNAL" のときだけ一般的な文言にする。
 function fnErr(e){
-  return (e && e.code && e.code !== "functions/internal" && e.message)
-    ? e.message
+  const m = e && e.message ? String(e.message) : "";
+  return (m && m.toUpperCase() !== "INTERNAL")
+    ? m
     : "実行できませんでした。通信状況をご確認ください。";
 }
 
@@ -936,6 +939,52 @@ async function toggleAdmin(btn){
   }
 }
 
+// 削除は取り消せないので、表示名を入力してもらってから実行する。
+// 停止（元に戻せる）と操作の重さを変えている。
+function openDeleteBox(btn){
+  const uid = btn.dataset.rm;
+  const m   = cacheMembers.find(x => x.uid === uid);
+  if(!m) return;
+  const row = btn.closest(".row");
+  if(row.nextElementSibling && row.nextElementSibling.classList.contains("reasonbox")) return;
+
+  const box = document.createElement("div");
+  box.className = "reasonbox";
+  box.innerHTML = `
+    <div class="reworknote"><b>取り消せません</b>
+      ログインアカウント・確認記録・同意記録を削除し、担当していたタスクからも外します。
+      タスクそのものは残ります。</div>
+    <label>削除するには「${esc(m.displayName)}」と入力してください</label>
+    <input type="text" autocapitalize="none" spellcheck="false" placeholder="${esc(m.displayName)}">
+    <div class="row">
+      <button class="btn sm red" disabled>削除する</button>
+      <button class="btn sm ghost">やめる</button>
+    </div>`;
+  row.after(box);
+
+  const inp = box.querySelector("input");
+  const [send, cancel] = box.querySelectorAll("button");
+  inp.oninput    = () => { send.disabled = inp.value.trim() !== m.displayName; };
+  cancel.onclick = () => box.remove();
+  send.onclick   = async () => {
+    send.disabled = true;
+    try{
+      const res = await callDeleteMember({ uid });
+      const c = (res && res.data && res.data.counts) || {};
+      box.remove();
+      await loadMembers(); renderMembers(); renderAssigneePicker();
+      await renderAdminTasks(); await renderAllTasks(); await renderTasks();
+      alert(`${m.displayName} さんを削除しました。\n\n`
+        + `タスク：${c.tasks || 0}件から担当を外しました\n`
+        + `確認記録：${c.reads || 0}件を削除\n`
+        + `同意記録：${c.consents || 0}件を削除`);
+    }catch(e){
+      console.error(e); alert(fnErr(e)); send.disabled = false;
+    }
+  };
+  inp.focus();
+}
+
 function renderMembers(){
   $("#memList").innerHTML = cacheMembers.length
     ? cacheMembers.map(m => {
@@ -951,7 +1000,8 @@ function renderMembers(){
           <button class="btn sm ghost" data-pin="${m.uid}">暗証番号を再設定</button>
           ${self ? "" : `
           <button class="btn sm ghost" data-adm="${m.uid}">${m.isAdmin ? "管理者を外す" : "管理者にする"}</button>
-          <button class="btn sm ghost" data-tog="${m.uid}">${m.status === "active" ? "停止する" : "有効に戻す"}</button>`}
+          <button class="btn sm ghost" data-tog="${m.uid}">${m.status === "active" ? "停止する" : "有効に戻す"}</button>
+          <button class="btn sm ghost" data-rm="${m.uid}">削除</button>`}
         </div>
       </div>`;
       }).join("")
@@ -959,6 +1009,7 @@ function renderMembers(){
 
   $$("[data-pin]").forEach(b => b.onclick = () => openPinBox(b));
   $$("[data-adm]").forEach(b => b.onclick = () => toggleAdmin(b));
+  $$("[data-rm]").forEach(b => b.onclick = () => openDeleteBox(b));
   $$("[data-tog]").forEach(b => b.onclick = async () => {
     const m = cacheMembers.find(x => x.uid === b.dataset.tog);
     const next = m.status === "active" ? "suspended" : "active";

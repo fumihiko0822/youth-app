@@ -18,6 +18,12 @@ rules_version = '2';
 //   ログインできなくなり、管理者が1人なら誰も復旧できなくなる。
 //   画面でボタンを隠していただけで、ルールでは守れていなかった。
 //   auditLogs（管理操作の記録）を追加した。
+//
+// v8 (2026-08-02)
+//   members の削除をクライアントから禁止した。削除は Cloud Functions
+//   （deleteMember）が Authentication と Firestore の両方を消す。
+//   クライアントから消せると、Firestore だけ消えて Auth が残る不整合を
+//   作れてしまい、同じIDで再発行できなくなる。
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -99,6 +105,7 @@ service cloud.firestore {
     // 管理者にもできないこと：
     //   isAdmin の変更            → Cloud Functions のみ（管理者0人を防ぐため）
     //   自分自身の status の変更   → 自分を停止して詰むのを防ぐため
+    //   削除                     → Cloud Functions のみ（Authと足並みを揃えるため）
     match /members/{uid} {
       allow read:   if isActive() || isAdmin();
       allow create: if isAdmin();
@@ -106,7 +113,7 @@ service cloud.firestore {
                     || (isSelf(uid)
                         && request.resource.data.diff(resource.data)
                              .affectedKeys().hasOnly(['fcmToken']));
-      allow delete: if isAdmin();
+      allow delete: if false;
     }
 
 
