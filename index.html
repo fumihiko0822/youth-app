@@ -216,7 +216,7 @@
     <label for="fId">ID</label>
     <input id="fId" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="例）sato">
     <label for="fPin">暗証番号</label>
-    <input id="fPin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="6桁以上">
+    <input id="fPin" type="password" autocomplete="current-password" autocapitalize="none" spellcheck="false" placeholder="6文字以上">
     <div style="margin-top:20px;"><button class="btn" id="btnLogin">ログイン</button></div>
     <div id="loginErr" class="err hidden"></div>
     <p style="font-size:12px;color:var(--muted);margin-top:16px;text-align:center;line-height:1.7;">
@@ -304,11 +304,12 @@
           <input id="nmName" type="text" placeholder="例）佐藤">
           <label>ID（半角英数）</label>
           <input id="nmId" type="text" autocapitalize="none" spellcheck="false" placeholder="例）sato">
-          <label>暗証番号（6桁以上の数字）</label>
-          <input id="nmPin" type="text" inputmode="numeric" placeholder="例）123456">
+          <label>暗証番号（6文字以上の英数字）</label>
+          <input id="nmPin" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="例）youth2026">
           <div style="margin-top:16px;"><button class="btn" id="btnAddMember">追加する</button></div>
           <div id="memErr" class="err hidden"></div>
-          <p class="mini">※ 暗証番号は後から変更できません。忘れた場合は新しいIDを発行してください。</p>
+          <p class="mini">※ 半角の英字と数字が使えます。大文字と小文字は区別されます。<br>
+            ※ 暗証番号は後から変更できません。忘れた場合は新しいIDを発行してください。</p>
         </div>
         <h2 class="sec">メンバー一覧</h2>
         <div id="memList" class="cards"></div>
@@ -884,7 +885,11 @@ $("#btnAddMember").addEventListener("click", async () => {
 
   if(!name || !id || !pin){ showErr($("#memErr"), "すべて入力してください。"); return; }
   if(!/^[a-z0-9._-]+$/.test(id)){ showErr($("#memErr"), "IDは半角英数字で入力してください。"); return; }
-  if(pin.length < 6){ showErr($("#memErr"), "暗証番号は6桁以上にしてください。"); return; }
+  if(pin.length < 6){ showErr($("#memErr"), "暗証番号は6文字以上にしてください。"); return; }
+  // 本人が口頭で受け取って手入力するため、半角の英数字だけに限る。
+  // 全角文字や記号が混ざると、本人が入力できずログインできなくなる。
+  if(!/^[A-Za-z0-9]+$/.test(pin)){
+    showErr($("#memErr"), "暗証番号は半角の英字と数字だけで入力してください。"); return; }
 
   $("#btnAddMember").disabled = true;
   let sub = null;
@@ -908,7 +913,7 @@ $("#btnAddMember").addEventListener("click", async () => {
     const c = String(e.code || "");
     showErr($("#memErr"),
       c.includes("email-already-in-use") ? "このIDは既に使われています。別のIDにしてください。"
-      : c.includes("weak-password")      ? "暗証番号は6桁以上にしてください。"
+      : c.includes("weak-password")      ? "暗証番号は6文字以上にしてください。"
       : c.includes("invalid-email")      ? "IDに使えない文字が含まれています。"
       : "追加できませんでした。");
   }finally{
