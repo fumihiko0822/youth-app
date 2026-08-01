@@ -49,6 +49,7 @@
 
   .btn{background:var(--navy);color:#fff;padding:13px 20px;border-radius:8px;font-weight:700;width:100%;}
   .btn:active{opacity:.8;}
+  .btn:disabled{opacity:.4;cursor:default;}
   .btn.red{background:var(--red);}
   .btn.ghost{background:#fff;color:var(--navy);border:1.5px solid var(--line);}
   .btn.sm{width:auto;padding:8px 16px;font-size:13px;border-radius:6px;}
@@ -92,6 +93,19 @@
   .item{background:#fff;border-radius:10px;padding:14px 16px;margin-bottom:10px;border:1px solid var(--line);}
   .item.due{border-left:5px solid var(--red);}
   .item.soon{border-left:5px solid #d89a2b;}
+  .item.pending{border-left:5px solid #d89a2b;background:#fffdf8;}
+
+  /* 差戻理由。「差戻」状態のときだけ表示する（理由は本人が消せないため） */
+  .reworknote{background:#fdf0ee;border-left:4px solid var(--red);border-radius:6px;
+    padding:9px 12px;margin-top:8px;font-size:13px;line-height:1.65;color:var(--navy2);}
+  .reworknote b{display:block;color:var(--red);font-size:11.5px;font-weight:700;margin-bottom:2px;}
+  .approw{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;
+    padding:9px 0;border-bottom:1px dashed var(--line);}
+  .approw:last-child{border-bottom:none;}
+  .approw .nm{font-size:13.5px;font-weight:600;}
+  .approw .acts{display:flex;gap:7px;}
+  .reasonbox{margin:2px 0 10px;}
+  .reasonbox textarea{min-height:72px;resize:vertical;}
   .item h3{font-size:15.5px;line-height:1.5;margin-bottom:5px;}
   .meta{font-size:12.5px;color:var(--muted);display:flex;flex-wrap:wrap;gap:10px;}
   .meta .hot{color:var(--red);font-weight:700;}
@@ -210,7 +224,7 @@
   <nav class="tabs">
     <button data-tab="task" class="on">タスク<span id="badgeTask" class="dot hidden">0</span></button>
     <button data-tab="sche">予定<span id="badgeSche" class="dot hidden">0</span></button>
-    <button data-tab="admin" id="tabAdmin" class="hidden">管理</button>
+    <button data-tab="admin" id="tabAdmin" class="hidden">管理<span id="badgeAdmin" class="dot hidden">0</span></button>
   </nav>
 
   <main>
@@ -254,6 +268,8 @@
 
       <!-- タスク管理 -->
       <div id="subTsk" class="hidden">
+        <!-- 承認待ち：見落とさないよう、追加フォームより上に置く -->
+        <div id="approvalBox" class="hidden"></div>
         <div class="panel">
           <h3>タスクを追加</h3>
           <label>内容</label>
@@ -270,7 +286,6 @@
           <input id="tkNote" type="text" placeholder="">
           <label>承認</label>
           <label class="pick sole"><input type="checkbox" id="tkApproval"><span>承認を求める（本人は「完了報告」まで。完了にするのは管理者）</span></label>
-          <p class="mini alert">※ 承認機能は未実装のため、現時点ではオンにすると完了できません。</p>
           <div style="margin-top:16px;"><button class="btn" id="btnAddTask">追加する</button></div>
           <div id="tskErr" class="err hidden"></div>
         </div>
@@ -497,10 +512,11 @@ function resetView(){
 
   // 前のセッションで描画した中身を残さない
   cacheMembers = [];
-  ["#taskList","#scheList","#memList","#admTaskList","#admScheList","#readList","#tkWho"]
+  ["#taskList","#scheList","#memList","#admTaskList","#admScheList","#readList","#tkWho","#approvalBox"]
     .forEach(s => { $(s).innerHTML = ""; });
   $("#tkAll").checked = false; $("#tkApproval").checked = false;
-  hide($("#badgeTask")); hide($("#badgeSche"));
+  hide($("#approvalBox"));
+  hide($("#badgeTask")); hide($("#badgeSche")); hide($("#badgeAdmin"));
 }
 
 async function startApp(){
@@ -511,7 +527,8 @@ async function startApp(){
   show($("#appView"));
   await loadMyReads();
   await Promise.all([ renderTasks(), renderSchedules() ]);
-  if(me.isAdmin) await loadMembers();
+  // 管理者は、管理タブを開く前に承認待ちの件数バッジを出しておく
+  if(me.isAdmin){ await loadMembers(); await renderAdminTasks(); }
 }
 
 async function loadMyReads(){
@@ -551,9 +568,14 @@ async function fetchMyTasks(){
 async function renderTasks(){
   const list = await fetchMyTasks();
   const box = $("#taskList");
-  const open = list.filter(t => myProgress(t) !== "完了");
-  const done = list.filter(t => myProgress(t) === "完了");
-  let unread = 0;
+  const open   = list.filter(t => myProgress(t) !== "完了");
+  const done   = list.filter(t => myProgress(t) === "完了");
+  const rework = open.filter(t => myProgress(t) === "差戻");   // 一覧の先頭に固定する（FR-19）
+  const rest   = open.filter(t => myProgress(t) !== "差戻");
+
+  // バッジは「対応が要るタスク」の数。差し戻されたものは確認済みでも数える。
+  const attention = open.filter(t =>
+    myProgress(t) === "差戻" || !myReads.has(`task__${t.id}`)).length;
 
   const card = (t) => {
     const st = myProgress(t);
@@ -561,7 +583,10 @@ async function renderTasks(){
     const n = daysLeft(t.dueDate);
     const cls = st === "完了" ? "" : (n !== null && n < 0 ? " due" : (n !== null && n <= 3 ? " soon" : ""));
     const isRead = myReads.has(`task__${t.id}`);
-    if(!isRead && st !== "完了") unread++;
+    // 差戻理由は「差戻」のときだけ出す。再報告すると状態が変わり、自動的に消える。
+    // （理由そのものは本人が削除できないため、表示側で制御する）
+    const rn = st === "差戻"
+      ? ((t.reworkNotes || {})[me.uid] || "（理由が記録されていません）") : null;
 
     // 承認あり … 本人は「完了報告」まで。「完了」にできるのは管理者だけ（ルールで制限）。
     //             承認済み（完了）は本人が取り消せないのでボタンを出さない。
@@ -585,6 +610,7 @@ async function renderTasks(){
         <span class="${n !== null && n <= 1 ? "hot" : ""}">${dueLabel(t.dueDate)}</span>` : ""}
       </div>
       ${t.note ? `<div class="note">${esc(t.note)}</div>` : ""}
+      ${rn ? `<div class="reworknote"><b>差し戻し</b>${esc(rn)}</div>` : ""}
       <div class="row">
         ${btn}
         ${isRead
@@ -595,10 +621,13 @@ async function renderTasks(){
   };
 
   box.innerHTML =
-    (open.length ? open.map(card).join("") : `<div class="empty">未完了のタスクはありません</div>`) +
+    (rework.length ? `<h2 class="sec">差し戻されています</h2>` + rework.map(card).join("") : "") +
+    (rest.length
+      ? rest.map(card).join("")
+      : (rework.length ? "" : `<div class="empty">未完了のタスクはありません</div>`)) +
     (done.length ? `<h2 class="sec">完了したタスク</h2>` + done.map(card).join("") : "");
 
-  badge($("#badgeTask"), unread);
+  badge($("#badgeTask"), attention);
   bindItemButtons();
 }
 
@@ -821,6 +850,8 @@ async function renderAdminTasks(){
   arr.sort((a,b) => (a.dueDate||"9999").localeCompare(b.dueDate||"9999"));
   const nameOf = (uid) => (cacheMembers.find(m => m.uid === uid)?.displayName) || "—";
 
+  renderApprovals(arr, nameOf);
+
   $("#admTaskList").innerHTML = arr.length
     ? arr.map(t => {
         const ids  = t.assigneeUids || [];
@@ -834,16 +865,126 @@ async function renderAdminTasks(){
           ${t.dueDate ? `<span>${fmtDate(t.dueDate)}</span>` : ""}
         </div>
         <div style="margin-top:9px;">
-          ${live.map(u => `<div class="readrow">
+          ${live.map(u => {
+            const ps = (t.progress || {})[u] || "未着手";
+            const rn = ps === "差戻"
+              ? ((t.reworkNotes || {})[u] || "（理由が記録されていません）") : null;
+            return `<div class="readrow">
             <span>${esc(nameOf(u))}</span>
-            ${statusPill((t.progress || {})[u] || "未着手")}
-          </div>`).join("")}
+            ${statusPill(ps)}
+          </div>` + (rn
+            ? `<div class="reworknote"><b>差し戻し理由（${esc(nameOf(u))}）</b>${esc(rn)}</div>` : "");
+          }).join("")}
         </div>
         ${gone > 0 ? `<div class="mini alert">停止中の担当者が${gone}人います（集計から除外しています）</div>` : ""}
         ${live.length === 0 ? `<div class="mini alert">有効な担当者がいません。このタスクは完了できません</div>` : ""}
       </div>`;
       }).join("")
     : `<div class="empty">タスクがありません</div>`;
+}
+
+/* ===== 管理：承認・差戻（FR-17） ===== */
+
+// 承認待ち（完了報告）を担当者単位で集め、タスクごとにまとめて上部に出す。
+// 専用タブを作らないのは、見る場所が増えると見落とすため。
+function renderApprovals(tasks, nameOf){
+  const groups = tasks
+    .map(t => ({ t, uids: activeAssignees(t).filter(u => (t.progress || {})[u] === "完了報告") }))
+    .filter(g => g.uids.length > 0);
+  const total = groups.reduce((n, g) => n + g.uids.length, 0);
+
+  badge($("#badgeAdmin"), total);
+
+  if(!total){ $("#approvalBox").innerHTML = ""; hide($("#approvalBox")); return; }
+  show($("#approvalBox"));
+
+  $("#approvalBox").innerHTML =
+    `<h2 class="sec">承認待ち <span class="dot">${total}</span></h2>` +
+    groups.map(g => `<div class="item pending">
+      <h3>${esc(g.t.title)}</h3>
+      <div class="meta">
+        <span>${g.uids.length}件の完了報告</span>
+        <span class="pill doing">承認あり</span>
+        ${g.t.dueDate ? `<span>${fmtDate(g.t.dueDate)}</span>` : ""}
+      </div>
+      <div style="margin-top:8px;">
+        ${g.uids.map(u => `<div class="approw">
+          <span class="nm">${esc(nameOf(u))}</span>
+          <span class="acts">
+            <button class="btn sm" data-ok="${g.t.id}|${u}">承認</button>
+            <button class="btn sm ghost" data-ng="${g.t.id}|${u}">差戻</button>
+          </span>
+        </div>`).join("")}
+      </div>
+      ${g.uids.length > 1
+        ? `<div class="row"><button class="btn sm ghost" data-okall="${g.t.id}|${g.uids.join(",")}">この${g.uids.length}件をまとめて承認</button></div>`
+        : ""}
+    </div>`).join("");
+
+  $$("[data-ok]").forEach(b => { b.onclick = () => {
+    const [id, uid] = b.dataset.ok.split("|");
+    approve(id, [uid], b);
+  }; });
+  $$("[data-okall]").forEach(b => { b.onclick = () => {
+    const [id, uids] = b.dataset.okall.split("|");
+    approve(id, uids.split(","), b);
+  }; });
+  $$("[data-ng]").forEach(b => { b.onclick = () => openReasonBox(b); });
+}
+
+// 差戻には理由が必須。空のままでは押せないようにする。
+function openReasonBox(btn){
+  const [taskId, uid] = btn.dataset.ng.split("|");
+  const row = btn.closest(".approw");
+  if(row.nextElementSibling && row.nextElementSibling.classList.contains("reasonbox")) return;
+
+  const box = document.createElement("div");
+  box.className = "reasonbox";
+  box.innerHTML = `
+    <label>差し戻す理由（必須）</label>
+    <textarea placeholder="例）日付が抜けています"></textarea>
+    <div class="row">
+      <button class="btn sm red" disabled>この理由で差し戻す</button>
+      <button class="btn sm ghost">やめる</button>
+    </div>`;
+  row.after(box);
+
+  const ta = box.querySelector("textarea");
+  const [send, cancel] = box.querySelectorAll("button");
+  ta.oninput  = () => { send.disabled = ta.value.trim() === ""; };
+  cancel.onclick = () => box.remove();
+  send.onclick   = () => reject(taskId, uid, ta.value.trim(), send);
+  ta.focus();
+}
+
+// 管理者は isAdmin() で通るため、他人の progress も書き換えられる。
+async function approve(taskId, uids, btn){
+  btn.disabled = true;
+  try{
+    const patch = {};
+    uids.forEach(u => { patch[`progress.${u}`] = "完了"; });
+    await updateDoc(doc(db,"tasks",taskId), patch);
+    await renderAdminTasks();
+    await renderTasks();      // 自分が担当のときは自分の一覧にも反映する
+  }catch(e){
+    console.error(e); alert("承認できませんでした。"); btn.disabled = false;
+  }
+}
+
+async function reject(taskId, uid, reason, btn){
+  if(!reason) return;         // 理由がなければ差し戻さない
+  btn.disabled = true;
+  try{
+    // 状態と理由を同時に書く
+    await updateDoc(doc(db,"tasks",taskId), {
+      [`progress.${uid}`]: "差戻",
+      [`reworkNotes.${uid}`]: reason
+    });
+    await renderAdminTasks();
+    await renderTasks();
+  }catch(e){
+    console.error(e); alert("差し戻せませんでした。"); btn.disabled = false;
+  }
 }
 
 /* ===== 管理：予定 ===== */
