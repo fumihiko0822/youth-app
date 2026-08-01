@@ -24,6 +24,12 @@ rules_version = '2';
 //   （deleteMember）が Authentication と Firestore の両方を消す。
 //   クライアントから消せると、Firestore だけ消えて Auth が残る不整合を
 //   作れてしまい、同じIDで再発行できなくなる。
+//
+// v9 (2026-08-02)
+//   taskLinks（タスクに添えるリンク）を追加した。
+//   タスク本体の配列で持たなかったのは、ルールに繰り返し処理がなく
+//   「消してよいのは自分が追加した要素だけ」を配列では表現できないため。
+//   ドキュメントを分ければ、その判定がそのまま delete の条件になる。
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -53,6 +59,14 @@ service cloud.firestore {
     // 自分がこのタスクの担当者のひとりか
     function isAssignee() {
       return isSignedIn() && request.auth.uid in resource.data.assigneeUids;
+    }
+
+    // 指定したタスクの担当者か（taskLinks の判定に使う）
+    function isAssigneeOfTask(taskId) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/tasks/$(taskId))
+        && request.auth.uid in
+           get(/databases/$(database)/documents/tasks/$(taskId)).data.assigneeUids;
     }
 
     // 管理者権限を書き換えようとしているか。
@@ -161,6 +175,23 @@ service cloud.firestore {
       allow read:   if isSelf(resource.data.uid) || isAdmin();
       allow update: if false;
       allow delete: if isAdmin();
+    }
+
+
+    // ---------- taskLinks : タスクに添えるリンク ----------
+    // 管理者 … 追加・編集・削除のすべて。
+    // 担当者 … 「自分名義での追加」と「自分が追加したものの削除」だけ。
+    //          既存のリンクは変更できない（update が管理者のみのため）。
+    //          管理者が付けたリンクは byUid が一致しないので消せない。
+    match /taskLinks/{linkId} {
+      allow read:   if isActive() || isAdmin();
+      allow create: if isAdmin()
+                    || (isActive()
+                        && isSelf(request.resource.data.byUid)
+                        && isAssigneeOfTask(request.resource.data.taskId));
+      allow update: if isAdmin();
+      allow delete: if isAdmin()
+                    || (isActive() && isSelf(resource.data.byUid));
     }
 
 

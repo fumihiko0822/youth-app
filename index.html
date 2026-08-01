@@ -133,6 +133,16 @@
   .approw:last-child{border-bottom:none;}
   .approw .nm{font-size:13.5px;font-weight:600;}
   .approw .acts{display:flex;gap:7px;}
+  /* タスクに添えるリンク */
+  .links{margin-top:9px;padding-top:8px;border-top:1px dashed var(--line);}
+  .links.bare{border-top:none;padding-top:0;margin-top:8px;}
+  .linkrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:5px 0;font-size:13px;}
+  .linkrow .lk{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;}
+  .linkrow .lk a{color:var(--navy);font-weight:600;}
+  .linkrow .by{font-size:11.5px;color:var(--muted);white-space:nowrap;}
+  .linkrow .bad{color:var(--red);}
+  .linkinput{display:flex;flex-direction:column;gap:6px;margin-bottom:8px;}
+
   .reasonbox{margin:2px 0 10px;}
   .reasonbox textarea{min-height:72px;resize:vertical;}
   .item h3{font-size:15.5px;line-height:1.5;margin-bottom:5px;}
@@ -345,6 +355,9 @@
           <input id="tkDue" type="date">
           <label>備考（任意）</label>
           <input id="tkNote" type="text" placeholder="">
+          <label>リンク（任意）</label>
+          <div id="tkLinks"></div>
+          <div><button class="btn sm ghost" id="btnLinkRow">リンクの欄を増やす</button></div>
           <label>承認</label>
           <label class="pick sole"><input type="checkbox" id="tkApproval"><span>承認を求める（本人は「完了報告」まで。完了にするのは管理者）</span></label>
           <div style="margin-top:16px;"><button class="btn" id="btnAddTask">追加する</button></div>
@@ -417,7 +430,8 @@ const fns  = getFunctions(app, "asia-northeast1");
 
 /* ===== 状態 ===== */
 let me = null;          // { uid, displayName, isAdmin, status }
-let cacheMembers = [];  // 管理者用
+let cacheMembers = [];  // 表示名の解決に使う（全員が読み込む）
+let cacheLinks = {};    // taskId => リンクの配列
 let myReads = new Set();
 
 /* ===== 小道具 ===== */
@@ -504,6 +518,146 @@ function readButton(t){
     ? `<span class="chk">確認済み</span>`
     : `<button class="btn sm red" data-read="task__${t.id}">確認しました</button>`;
 }
+
+/* ===== タスクに添えるリンク（FR-28） =====
+   タスク本体の配列ではなく taskLinks コレクションで持つ。ルールに繰り返し処理が
+   なく、配列では「消してよいのは自分が追加した分だけ」を表現できないため。 */
+
+// http(s) 以外は受け付けない。javascript: などをリンクにすると、
+// 押しただけでスクリプトが動いてしまう。
+const isSafeUrl = (u) => /^https?:\/\//i.test(String(u || "").trim());
+
+// ラベル未指定のときの表示。ドライブの生URLは人が読めないため置き換える。
+function linkLabel(url, label){
+  if(label) return label;
+  try{
+    const u = new URL(url);
+    if(u.hostname === "docs.google.com"){
+      if(u.pathname.startsWith("/spreadsheets")) return "スプレッドシート";
+      if(u.pathname.startsWith("/document"))     return "ドキュメント";
+      if(u.pathname.startsWith("/presentation")) return "スライド";
+      if(u.pathname.startsWith("/forms"))        return "フォーム";
+    }
+    if(u.hostname === "drive.google.com") return "ドライブのファイル";
+    return u.hostname;
+  }catch(e){ return url; }
+}
+
+async function loadTaskLinks(){
+  const s = await getDocs(collection(db,"taskLinks"));
+  cacheLinks = {};
+  s.forEach(d => {
+    const v = { id:d.id, ...d.data() };
+    (cacheLinks[v.taskId] = cacheLinks[v.taskId] || []).push(v);
+  });
+  // 追加した順に並べる（サーバ時刻が未確定のものは末尾）
+  Object.values(cacheLinks).forEach(a =>
+    a.sort((x,y) => ((x.at && x.at.seconds) || 1e18) - ((y.at && y.at.seconds) || 1e18)));
+}
+
+// リンクの一覧。削除ボタンは管理者と、自分が追加した分にだけ出す。
+// ルール側でも同じ判定をしているので、ここでの出し分けは操作性のためのもの。
+function linksBlock(t){
+  const list = cacheLinks[t.id] || [];
+  const canAdd = me.isAdmin || (t.assigneeUids || []).includes(me.uid);
+  if(!list.length && !canAdd) return "";
+
+  const rows = list.map(l => {
+    const who = (cacheMembers.find(m => m.uid === l.byUid) || {}).displayName || l.byName || "—";
+    const label = esc(linkLabel(l.url, l.label));
+    // 表示のときにもスキームを確かめる。保存済みの値が不正でも、ここで必ず止める。
+    const body = isSafeUrl(l.url)
+      ? `<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${label}</a>`
+      : `<span class="bad">${label}（開けないリンク）</span>`;
+    return `<div class="linkrow">
+      <span class="lk">🔗 ${body}</span>
+      <span class="by">${esc(who)} が追加</span>
+      ${(me.isAdmin || l.byUid === me.uid)
+        ? `<button class="btn sm ghost" data-lkdel="${l.id}">削除</button>` : ""}
+    </div>`;
+  }).join("");
+
+  // リンクが1件も無いときは、区切り線を出さず追加ボタンだけにする
+  return `<div class="links${list.length ? "" : " bare"}">${rows}${canAdd
+    ? `<button class="btn sm ghost" data-lkadd="${t.id}">リンクを追加</button>` : ""}</div>`;
+}
+
+function openLinkBox(btn){
+  const taskId = btn.dataset.lkadd;
+  if(btn.nextElementSibling && btn.nextElementSibling.classList.contains("reasonbox")) return;
+
+  const box = document.createElement("div");
+  box.className = "reasonbox";
+  box.innerHTML = `
+    <label>リンク（https:// で始まるURL）</label>
+    <input type="url" class="u" autocapitalize="none" spellcheck="false"
+           placeholder="https://docs.google.com/spreadsheets/...">
+    <label>表示名（任意）</label>
+    <input type="text" class="l" placeholder="例）集計用シート">
+    <div class="row">
+      <button class="btn sm red" disabled>追加する</button>
+      <button class="btn sm ghost">やめる</button>
+    </div>`;
+  btn.after(box);
+
+  const u = box.querySelector(".u"), lb = box.querySelector(".l");
+  const [send, cancel] = box.querySelectorAll("button");
+  u.oninput      = () => { send.disabled = !isSafeUrl(u.value); };
+  cancel.onclick = () => box.remove();
+  send.onclick   = async () => {
+    send.disabled = true;
+    try{
+      await addDoc(collection(db,"taskLinks"), {
+        taskId,
+        url: u.value.trim(),
+        label: lb.value.trim() || null,
+        byUid: me.uid,
+        byName: me.displayName,
+        at: serverTimestamp()
+      });
+      await refreshLinks();
+    }catch(e){
+      console.error(e); alert("追加できませんでした。担当者でないか、通信状況をご確認ください。");
+      send.disabled = false;
+    }
+  };
+  u.focus();
+}
+
+async function deleteLink(btn){
+  if(!confirm("このリンクを削除しますか？")) return;
+  btn.disabled = true;
+  try{
+    await deleteDoc(doc(db,"taskLinks", btn.dataset.lkdel));
+    await refreshLinks();
+  }catch(e){
+    console.error(e); alert("削除できませんでした。"); btn.disabled = false;
+  }
+}
+
+async function refreshLinks(){
+  await loadTaskLinks();
+  await renderTasks(); await renderAllTasks();
+  if(me.isAdmin) await renderAdminTasks();
+}
+
+function bindLinkButtons(){
+  $$("[data-lkadd]").forEach(b => { b.onclick = () => openLinkBox(b); });
+  $$("[data-lkdel]").forEach(b => { b.onclick = () => deleteLink(b); });
+}
+
+// 作成フォームのリンク入力欄を1行足す
+function addLinkRow(){
+  const d = document.createElement("div");
+  d.className = "linkinput";
+  d.innerHTML = `
+    <input type="url" class="u" autocapitalize="none" spellcheck="false"
+           placeholder="https://docs.google.com/spreadsheets/...">
+    <input type="text" class="l" placeholder="表示名（任意）">`;
+  $("#tkLinks").appendChild(d);
+}
+function resetLinkRows(){ $("#tkLinks").innerHTML = ""; addLinkRow(); }
+$("#btnLinkRow").addEventListener("click", addLinkRow);
 
 const readKey = (type, id) => `${type}__${id}__${me.uid}`;
 
@@ -609,9 +763,11 @@ function resetView(){
 
   // 前のセッションで描画した中身を残さない
   cacheMembers = [];
+  cacheLinks = {};
   ["#taskList","#allList","#scheList","#memList","#admTaskList","#admScheList","#readList","#tkWho","#approvalBox"]
     .forEach(s => { $(s).innerHTML = ""; });
   $("#tkAll").checked = false; $("#tkApproval").checked = false;
+  resetLinkRows();
   hide($("#approvalBox"));
   hide($("#badgeTask")); hide($("#badgeSche")); hide($("#badgeAdmin"));
 }
@@ -625,6 +781,7 @@ async function startApp(){
   await loadMyReads();
   // 担当者名の表示に使う。ルール上、有効なメンバーは members を全員読める。
   await loadMembers();
+  await loadTaskLinks();
   await Promise.all([ renderTasks(), renderAllTasks(), renderSchedules() ]);
   // 管理者は、管理タブを開く前に承認待ちの件数バッジを出しておく
   if(me.isAdmin) await renderAdminTasks();
@@ -695,6 +852,7 @@ async function renderTasks(){
       </div>
       ${t.note ? `<div class="note">${esc(t.note)}</div>` : ""}
       ${rn ? `<div class="reworknote"><b>差し戻し</b>${esc(rn)}</div>` : ""}
+      ${linksBlock(t)}
       <div class="row">${progressButton(t)}${readButton(t)}</div>
     </div>`;
   };
@@ -757,6 +915,7 @@ async function renderAllTasks(){
             ? `<div class="reworknote"><b>差し戻し理由（${esc(nameOf(u))}）</b>${esc(rn)}</div>` : "");
         }).join("")}
       </details>` : `<div class="left">有効な担当者がいません</div>`}
+      ${linksBlock(t)}
       ${mine ? `<div class="row">${progressButton(t)}${readButton(t)}</div>` : ""}
     </div>`;
   };
@@ -818,6 +977,7 @@ function bindItemButtons(){
   $$("[data-done]").forEach(b => { b.onclick = () => setMyProgress(b.dataset.done, "完了", b); });
   $$("[data-report]").forEach(b => { b.onclick = () => setMyProgress(b.dataset.report, "完了報告", b); });
   $$("[data-undo]").forEach(b => { b.onclick = () => setMyProgress(b.dataset.undo, "未着手", b); });
+  bindLinkButtons();
 }
 
 async function markRead(key, btn){
@@ -977,7 +1137,8 @@ function openDeleteBox(btn){
       alert(`${m.displayName} さんを削除しました。\n\n`
         + `タスク：${c.tasks || 0}件から担当を外しました\n`
         + `確認記録：${c.reads || 0}件を削除\n`
-        + `同意記録：${c.consents || 0}件を削除`);
+        + `同意記録：${c.consents || 0}件を削除\n`
+        + `リンク：${c.links || 0}件を削除`);
     }catch(e){
       console.error(e); alert(fnErr(e)); send.disabled = false;
     }
@@ -1091,11 +1252,21 @@ $("#btnAddTask").addEventListener("click", async () => {
   const due   = $("#tkDue").value;
   if(!title){ showErr($("#tskErr"), "内容を入力してください。"); return; }
   if(!uids.length){ showErr($("#tskErr"), "担当を1人以上選んでください。"); return; }
+
+  // 空欄の行は無視するが、書かれていて形式が違うものは黙って捨てずに知らせる
+  const linkRows = [...$$("#tkLinks .linkinput")].map(r => ({
+    url:   r.querySelector(".u").value.trim(),
+    label: r.querySelector(".l").value.trim()
+  })).filter(r => r.url !== "");
+  if(linkRows.some(r => !isSafeUrl(r.url))){
+    showErr($("#tskErr"), "リンクは https:// または http:// で始まるURLを入力してください。"); return;
+  }
+
   $("#btnAddTask").disabled = true;
   try{
     // 担当者は1人でも配列で持つ。progress は全担当者分を「未着手」で初期化する。
     // 初期化を忘れると、その担当者は自分の進捗を一切変更できなくなる（ルールで拒否される）。
-    await addDoc(collection(db,"tasks"), {
+    const taskRef = await addDoc(collection(db,"tasks"), {
       title,
       assigneeUids: uids,
       progress: Object.fromEntries(uids.map(u => [u, "未着手"])),
@@ -1104,9 +1275,23 @@ $("#btnAddTask").addEventListener("click", async () => {
       dueDate: due || null, note: $("#tkNote").value.trim() || null,
       createdBy: me.uid, createdAt: serverTimestamp()
     });
+    // リンクは taskLinks に分けて持つ（担当者も後から追加できるようにするため）
+    for(const r of linkRows){
+      await addDoc(collection(db,"taskLinks"), {
+        taskId: taskRef.id,
+        url: r.url,
+        label: r.label || null,
+        byUid: me.uid,
+        byName: me.displayName,
+        at: serverTimestamp()
+      });
+    }
+
     $("#tkTitle").value = ""; $("#tkDue").value = ""; $("#tkNote").value = "";
     $("#tkApproval").checked = false; $("#tkAll").checked = false;
     $$("#tkWho .who").forEach(c => { c.checked = false; });
+    resetLinkRows();
+    await loadTaskLinks();
     await renderAdminTasks(); await renderTasks(); await renderAllTasks();
   }catch(e){ console.error(e); showErr($("#tskErr"), "追加できませんでした。"); }
   finally{ $("#btnAddTask").disabled = false; }
@@ -1147,6 +1332,7 @@ async function renderAdminTasks(){
         </div>
         ${gone > 0 ? `<div class="mini alert">停止中の担当者が${gone}人います（集計から除外しています）</div>` : ""}
         ${live.length === 0 ? `<div class="mini alert">有効な担当者がいません。このタスクは完了できません</div>` : ""}
+        ${linksBlock(t)}
         <div class="row"><button class="btn sm ghost" data-del="${t.id}">削除</button></div>
       </div>`;
       }).join("")
@@ -1156,6 +1342,7 @@ async function renderAdminTasks(){
     const t = arr.find(x => x.id === b.dataset.del);
     removeTask(b.dataset.del, t ? t.title : "", b);
   }; });
+  bindLinkButtons();
 }
 
 // 削除できるのは管理者だけ（ルールでも制限済み）。取り消せないため、
@@ -1166,7 +1353,12 @@ async function removeTask(taskId, title, btn){
   if(!confirm(`「${title}」を削除します。\n取り消せません。よろしいですか？`)) return;
   btn.disabled = true;
   try{
+    // 先にリンクを消す。タスクを先に消すと、taskId で辿れないリンクが
+    // 画面から見えないまま残ってしまう。
+    const ls = await getDocs(query(collection(db,"taskLinks"), where("taskId","==",taskId)));
+    for(const d of ls.docs) await deleteDoc(d.ref);
     await deleteDoc(doc(db,"tasks",taskId));
+    await loadTaskLinks();
     await renderAdminTasks(); await renderTasks(); await renderAllTasks();
   }catch(e){
     console.error(e); alert("削除できませんでした。"); btn.disabled = false;

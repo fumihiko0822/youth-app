@@ -220,6 +220,10 @@ exports.deleteMember = onCall({ region: REGION }, async (request) => {
     const consentSnap = await db.collection("consents").where("uid", "==", targetUid).get();
     consentSnap.docs.forEach((d) => writes.push({ op: "delete", ref: d.ref }));
 
+    // この人が追加したリンクも消す（確認記録・同意記録と同じ扱い）
+    const linkSnap = await db.collection("taskLinks").where("byUid", "==", targetUid).get();
+    linkSnap.docs.forEach((d) => writes.push({ op: "delete", ref: d.ref }));
+
     // 4) アカウント本体
     writes.push({ op: "delete", ref: targetRef });
 
@@ -237,6 +241,7 @@ exports.deleteMember = onCall({ region: REGION }, async (request) => {
       tasks: taskSnap.size,
       reads: readSnap.size,
       consents: consentSnap.size,
+      links: linkSnap.size,
     };
 
     await writeAuditLog({
