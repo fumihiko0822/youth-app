@@ -1,2 +1,7 @@
 # 要件定義書は内部資料のため、公開リポジトリには含めない
 *.pdf
+
+# Firebase CLI のデバッグログ（デプロイのたびに生成される）
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
