@@ -29,6 +29,17 @@
   input,select,textarea{font-family:inherit;font-size:16px;width:100%;
     padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--navy);}
   input:focus,select:focus,textarea:focus{outline:2px solid var(--navy);outline-offset:-1px;}
+
+  /* iOS Safari は input[type=date] の幅指定を無視し、中身の幅で広がって
+     枠からはみ出す。ネイティブの見た目を外し、枠内に収まるようにする。 */
+  input[type="date"]{
+    -webkit-appearance:none;appearance:none;
+    min-width:0;max-width:100%;
+    min-height:47px;                       /* 見た目の高さを他の入力欄と揃える */
+  }
+  input[type="date"]::-webkit-date-and-time-value{text-align:left;margin:0;}
+  input[type="date"]::-webkit-datetime-edit{padding:0;}
+  input[type="date"]::-webkit-calendar-picker-indicator{margin:0;flex:0 0 auto;}
   label{display:block;font-size:13px;color:var(--muted);margin:14px 0 5px;font-weight:600;}
 
   /* チェックボックスは上の input 一括指定（width:100%・枠線）を打ち消す */
@@ -304,11 +315,11 @@
           <input id="nmName" type="text" placeholder="例）佐藤">
           <label>ID（半角英数）</label>
           <input id="nmId" type="text" autocapitalize="none" spellcheck="false" placeholder="例）sato">
-          <label>暗証番号（6文字以上の英数字）</label>
+          <label>暗証番号（6文字以上）</label>
           <input id="nmPin" type="text" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="例）youth2026">
           <div style="margin-top:16px;"><button class="btn" id="btnAddMember">追加する</button></div>
           <div id="memErr" class="err hidden"></div>
-          <p class="mini">※ 半角の英字と数字が使えます。大文字と小文字は区別されます。<br>
+          <p class="mini">※ 英字と数字が使えます。大文字と小文字は区別されます。<br>
             ※ 暗証番号は後から変更できません。忘れた場合は新しいIDを発行してください。</p>
         </div>
         <h2 class="sec">メンバー一覧</h2>
@@ -886,10 +897,6 @@ $("#btnAddMember").addEventListener("click", async () => {
   if(!name || !id || !pin){ showErr($("#memErr"), "すべて入力してください。"); return; }
   if(!/^[a-z0-9._-]+$/.test(id)){ showErr($("#memErr"), "IDは半角英数字で入力してください。"); return; }
   if(pin.length < 6){ showErr($("#memErr"), "暗証番号は6文字以上にしてください。"); return; }
-  // 本人が口頭で受け取って手入力するため、半角の英数字だけに限る。
-  // 全角文字や記号が混ざると、本人が入力できずログインできなくなる。
-  if(!/^[A-Za-z0-9]+$/.test(pin)){
-    showErr($("#memErr"), "暗証番号は半角の英字と数字だけで入力してください。"); return; }
 
   $("#btnAddMember").disabled = true;
   let sub = null;
