@@ -164,6 +164,30 @@
   .cbox li{margin-bottom:3px;}
 
   .spin{text-align:center;padding:60px 20px;color:var(--muted);font-size:14px;}
+
+  /* ---------- PC対応（FR-18） ----------
+     960px以上でのみ適用する。モバイル（959px以下）の見え方は一切変えない。
+     管理者は同じURL・同じアプリのまま、一覧を広く使える。 */
+  @media (min-width:960px){
+    main{max-width:1080px;}
+
+    /* ヘッダーとタブの中身を本文と同じ幅で中央に寄せる（帯は画面いっぱいのまま） */
+    header.bar{padding-left:max(16px, calc((100% - 1080px) / 2));
+               padding-right:max(16px, calc((100% - 1080px) / 2));}
+    nav.tabs{padding-left:max(0px, calc((100% - 1080px) / 2));
+             padding-right:max(0px, calc((100% - 1080px) / 2));}
+    nav.tabs button{padding:13px 4px;font-size:13.5px;}   /* 幅に余裕があるので戻す */
+    .dot{min-width:18px;height:18px;line-height:18px;font-size:11px;margin-left:4px;padding:0 5px;}
+
+    /* 一覧は2列。見出し・折りたたみ・空状態は横幅いっぱいに置く */
+    .cards{display:grid;grid-template-columns:repeat(2, minmax(0,1fr));gap:12px;align-items:start;}
+    .cards > *{margin-bottom:0;}
+    .cards > h2, .cards > .fold, .cards > .empty, .cards > .spin{grid-column:1 / -1;}
+
+    /* 入力フォームは間延びさせない */
+    .panel{max-width:560px;}
+    .picker .list{max-height:320px;}
+  }
 </style>
 </head>
 <body>
@@ -249,17 +273,17 @@
   <main>
     <!-- マイタスク -->
     <section id="paneTask">
-      <div id="taskList"></div>
+      <div id="taskList" class="cards"></div>
     </section>
 
     <!-- みんな -->
     <section id="paneAll" class="hidden">
-      <div id="allList"></div>
+      <div id="allList" class="cards"></div>
     </section>
 
     <!-- 予定 -->
     <section id="paneSche" class="hidden">
-      <div id="scheList"></div>
+      <div id="scheList" class="cards"></div>
     </section>
 
     <!-- 管理 -->
@@ -287,13 +311,13 @@
           <p class="mini">※ 暗証番号は後から変更できません。忘れた場合は新しいIDを発行してください。</p>
         </div>
         <h2 class="sec">メンバー一覧</h2>
-        <div id="memList"></div>
+        <div id="memList" class="cards"></div>
       </div>
 
       <!-- タスク管理 -->
       <div id="subTsk" class="hidden">
         <!-- 承認待ち：見落とさないよう、追加フォームより上に置く -->
-        <div id="approvalBox" class="hidden"></div>
+        <div id="approvalBox" class="cards hidden"></div>
         <div class="panel">
           <h3>タスクを追加</h3>
           <label>内容</label>
@@ -314,7 +338,7 @@
           <div id="tskErr" class="err hidden"></div>
         </div>
         <h2 class="sec">タスク一覧</h2>
-        <div id="admTaskList"></div>
+        <div id="admTaskList" class="cards"></div>
       </div>
 
       <!-- 予定管理 -->
@@ -339,7 +363,7 @@
         <p class="mini" style="margin-bottom:12px;">
           誰が確認済みで、誰が未確認かの一覧です。管理者だけが見られます。
         </p>
-        <div id="readList"></div>
+        <div id="readList" class="cards"></div>
       </div>
     </section>
   </main>
@@ -450,8 +474,10 @@ function progressButton(t){
 
 // 完了分・過去分は折りたたんで残す（FR-21）。消してしまうと、
 // 「終わったかどうか」を後から確認できなくなるため。既定は閉じた状態。
+// 中身を div で包むのは、PC幅で2列にするため（details 自体に display:grid を
+// 当てると、閉じた状態が壊れるブラウザがあるため内側に1枚挟む）。
 const fold = (label, n, html) =>
-  `<details class="fold"><summary>${label}（${n}件）</summary>${html}</details>`;
+  `<details class="fold"><summary>${label}（${n}件）</summary><div class="cards">${html}</div></details>`;
 
 // 確認（既読）ボタン。自分が担当のタスクにだけ出す。
 function readButton(t){
