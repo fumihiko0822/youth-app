@@ -9,6 +9,15 @@ rules_version = '2';
 //            現在値も見るようにした。
 //   R-3修正: タスク作成時に必須項目の存在を検証するようにした。
 //            progress の初期化漏れを防ぐ。
+//
+// v7 (2026-08-02)
+//   isAdmin をクライアントから変更できないようにした。切り替えは
+//   Cloud Functions（setMemberAdmin）が Admin SDK で行う。管理者が
+//   0人になる経路を塞ぐため、トランザクションで残り人数を確かめている。
+//   自分自身の status も変更できないようにした。自分を停止すると即座に
+//   ログインできなくなり、管理者が1人なら誰も復旧できなくなる。
+//   画面でボタンを隠していただけで、ルールでは守れていなかった。
+//   auditLogs（管理操作の記録）を追加した。
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -38,6 +47,18 @@ service cloud.firestore {
     // 自分がこのタスクの担当者のひとりか
     function isAssignee() {
       return isSignedIn() && request.auth.uid in resource.data.assigneeUids;
+    }
+
+    // 管理者権限を書き換えようとしているか。
+    // クライアントからは付与も解除もさせない（Cloud Functions が行う）。
+    function changesAdminFlag() {
+      return request.resource.data.isAdmin != resource.data.isAdmin;
+    }
+
+    // 自分自身の状態（有効／停止）を書き換えようとしているか。
+    // 自分を停止すると即座にログインできなくなるため禁じる。
+    function changesOwnStatus(uid) {
+      return isSelf(uid) && request.resource.data.status != resource.data.status;
     }
 
     // 変更しようとしているのが progress の中の「自分の分」だけか
@@ -74,10 +95,14 @@ service cloud.firestore {
 
     // ---------- members : アカウント ----------
     // 表示名が互いの画面に出るため、有効なメンバーは互いに読める。
+    //
+    // 管理者にもできないこと：
+    //   isAdmin の変更            → Cloud Functions のみ（管理者0人を防ぐため）
+    //   自分自身の status の変更   → 自分を停止して詰むのを防ぐため
     match /members/{uid} {
       allow read:   if isActive() || isAdmin();
       allow create: if isAdmin();
-      allow update: if isAdmin()
+      allow update: if (isAdmin() && !changesAdminFlag() && !changesOwnStatus(uid))
                     || (isSelf(uid)
                         && request.resource.data.diff(resource.data)
                              .affectedKeys().hasOnly(['fcmToken']));
@@ -129,6 +154,16 @@ service cloud.firestore {
       allow read:   if isSelf(resource.data.uid) || isAdmin();
       allow update: if false;
       allow delete: if isAdmin();
+    }
+
+
+    // ---------- auditLogs : 管理操作の記録 ----------
+    // 暗証番号の再設定と、管理者権限の付与・解除を残す。
+    // 書き込むのは Cloud Functions（Admin SDK）だけ。クライアントからは書けない。
+    // 新しい暗証番号そのものは記録しない。
+    match /auditLogs/{logId} {
+      allow read:  if isAdmin();
+      allow write: if false;
     }
 
 
