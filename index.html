@@ -31,6 +31,22 @@
   input:focus,select:focus,textarea:focus{outline:2px solid var(--navy);outline-offset:-1px;}
   label{display:block;font-size:13px;color:var(--muted);margin:14px 0 5px;font-weight:600;}
 
+  /* チェックボックスは上の input 一括指定（width:100%・枠線）を打ち消す */
+  input[type=checkbox]{
+    -webkit-appearance:checkbox;appearance:checkbox;
+    width:20px;height:20px;min-width:20px;flex:0 0 auto;
+    padding:0;margin:0;border:none;border-radius:0;background:none;accent-color:var(--navy);
+  }
+  label.pick{display:flex;align-items:center;gap:11px;margin:0;padding:12px 14px;
+    font-size:14.5px;font-weight:500;color:var(--navy);line-height:1.5;
+    border-top:1px solid var(--line);cursor:pointer;}
+  label.pick:first-child{border-top:none;}
+  label.pick.all{background:var(--bg);font-weight:700;}
+  label.pick.sole{border:1px solid var(--line);border-radius:8px;background:#fff;}
+  .picker{border:1px solid var(--line);border-radius:8px;background:#fff;overflow:hidden;}
+  .picker .list{max-height:240px;overflow-y:auto;-webkit-overflow-scrolling:touch;}
+  .picker .empty{border:none;background:none;padding:16px;}
+
   .btn{background:var(--navy);color:#fff;padding:13px 20px;border-radius:8px;font-weight:700;width:100%;}
   .btn:active{opacity:.8;}
   .btn.red{background:var(--red);}
@@ -84,6 +100,8 @@
   .pill{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:4px;}
   .pill.todo{background:#eee9e2;color:var(--navy2);}
   .pill.doing{background:#3f6f8f;color:#fff;}
+  .pill.report{background:#3f6f8f;color:#fff;}
+  .pill.rework{background:var(--red);color:#fff;}
   .pill.done{background:var(--ok);color:#fff;}
   .chk{background:var(--ok);color:#fff;font-size:12px;padding:5px 12px;border-radius:20px;font-weight:700;}
 
@@ -96,6 +114,7 @@
   .panel h3{font-size:14px;margin-bottom:2px;}
   .panel h3 + p{font-size:12.5px;color:var(--muted);margin-bottom:6px;}
   .mini{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.6;}
+  .mini.alert{color:var(--red);font-weight:700;}
   .readrow{display:flex;justify-content:space-between;gap:10px;font-size:13px;
     padding:7px 0;border-bottom:1px dashed var(--line);}
   .readrow:last-child{border-bottom:none;}
@@ -239,12 +258,19 @@
           <h3>タスクを追加</h3>
           <label>内容</label>
           <input id="tkTitle" type="text" placeholder="例）10月号アンケート設置">
-          <label>担当</label>
-          <select id="tkWho"></select>
+          <label>担当（複数選べます）</label>
+          <div class="picker">
+            <label class="pick all"><input type="checkbox" id="tkAll"><span>全員に割り当てる</span></label>
+            <div class="list" id="tkWho"></div>
+          </div>
+          <p class="mini">※「全員」は、いま有効なメンバーを対象にします。あとから入った人はこのタスクの担当になりません。</p>
           <label>締切</label>
           <input id="tkDue" type="date">
           <label>備考（任意）</label>
           <input id="tkNote" type="text" placeholder="">
+          <label>承認</label>
+          <label class="pick sole"><input type="checkbox" id="tkApproval"><span>承認を求める（本人は「完了報告」まで。完了にするのは管理者）</span></label>
+          <p class="mini alert">※ 承認機能は未実装のため、現時点ではオンにすると完了できません。</p>
           <div style="margin-top:16px;"><button class="btn" id="btnAddTask">追加する</button></div>
           <div id="tskErr" class="err hidden"></div>
         </div>
@@ -349,16 +375,21 @@ function fmtDate(s){
   return `${Number(m)}月${Number(d)}日(${w})`;
 }
 function statusPill(st){
-  // 「完了報告」「差戻」は承認フロー（FR-17）を入れる段階で追加する
-  const map = { "未着手":"todo", "完了":"done" };
+  const map = { "未着手":"todo", "完了報告":"report", "差戻":"rework", "完了":"done" };
   return `<span class="pill ${map[st]||"todo"}">${esc(st||"未着手")}</span>`;
 }
 
 /* 進捗は担当者ひとりひとりで持つ（FR-24）。自分の分だけを見て、自分の分だけを書く */
 const myProgress = (t) => (t.progress || {})[me.uid] || "未着手";
-const doneCount  = (t) => (t.assigneeUids || []).filter(u => (t.progress || {})[u] === "完了").length;
-const taskDone   = (t) => {
-  const ids = t.assigneeUids || [];
+
+// 集計は「有効なメンバー」だけで行う。停止された担当者は分母からも分子からも除く。
+// 除かないと、退部した人の分が「未着手」のまま残り、タスクが永久に完了しなくなる。
+// cacheMembers を使うため、管理画面（管理者）からの呼び出し専用。
+const activeAssignees = (t) => (t.assigneeUids || [])
+  .filter(u => cacheMembers.some(m => m.uid === u && m.status === "active"));
+const doneCount = (t) => activeAssignees(t).filter(u => (t.progress || {})[u] === "完了").length;
+const taskDone  = (t) => {
+  const ids = activeAssignees(t);
   return ids.length > 0 && doneCount(t) === ids.length;   // 全員が完了して初めてタスク完了
 };
 
@@ -466,8 +497,9 @@ function resetView(){
 
   // 前のセッションで描画した中身を残さない
   cacheMembers = [];
-  ["#taskList","#scheList","#memList","#admTaskList","#admScheList","#readList"]
+  ["#taskList","#scheList","#memList","#admTaskList","#admScheList","#readList","#tkWho"]
     .forEach(s => { $(s).innerHTML = ""; });
+  $("#tkAll").checked = false; $("#tkApproval").checked = false;
   hide($("#badgeTask")); hide($("#badgeSche"));
 }
 
@@ -525,10 +557,26 @@ async function renderTasks(){
 
   const card = (t) => {
     const st = myProgress(t);
+    const need = t.needsApproval === true;
     const n = daysLeft(t.dueDate);
     const cls = st === "完了" ? "" : (n !== null && n < 0 ? " due" : (n !== null && n <= 3 ? " soon" : ""));
     const isRead = myReads.has(`task__${t.id}`);
     if(!isRead && st !== "完了") unread++;
+
+    // 承認あり … 本人は「完了報告」まで。「完了」にできるのは管理者だけ（ルールで制限）。
+    //             承認済み（完了）は本人が取り消せないのでボタンを出さない。
+    // 承認なし … 本人が「完了」まで押せる。押し間違いは「未着手」に戻せる。
+    let btn;
+    if(need){
+      btn = st === "完了"     ? ""
+          : st === "完了報告"  ? `<button class="btn sm ghost" data-undo="${t.id}">報告を取り消す</button>`
+          :                     `<button class="btn sm ghost" data-report="${t.id}">完了報告する</button>`;
+    }else{
+      btn = st === "完了"
+          ? `<button class="btn sm ghost" data-undo="${t.id}">完了を取り消す</button>`
+          : `<button class="btn sm ghost" data-done="${t.id}">完了にする</button>`;
+    }
+
     return `<div class="item${cls}">
       <h3>${esc(t.title)}</h3>
       <div class="meta">
@@ -538,9 +586,7 @@ async function renderTasks(){
       </div>
       ${t.note ? `<div class="note">${esc(t.note)}</div>` : ""}
       <div class="row">
-        ${st === "完了"
-          ? `<button class="btn sm ghost" data-undo="${t.id}">完了を取り消す</button>`
-          : `<button class="btn sm ghost" data-done="${t.id}">完了にする</button>`}
+        ${btn}
         ${isRead
           ? `<span class="chk">確認済み</span>`
           : `<button class="btn sm red" data-read="task__${t.id}">確認しました</button>`}
@@ -604,6 +650,7 @@ function badge(el, n){
 function bindItemButtons(){
   $$("[data-read]").forEach(b => { b.onclick = () => markRead(b.dataset.read, b); });
   $$("[data-done]").forEach(b => { b.onclick = () => setMyProgress(b.dataset.done, "完了", b); });
+  $$("[data-report]").forEach(b => { b.onclick = () => setMyProgress(b.dataset.report, "完了報告", b); });
   $$("[data-undo]").forEach(b => { b.onclick = () => setMyProgress(b.dataset.undo, "未着手", b); });
 }
 
@@ -648,7 +695,7 @@ async function loadMembers(){
 async function loadAdmin(){
   await loadMembers();
   renderMembers();
-  fillWhoSelect();
+  renderAssigneePicker();
   renderAdminTasks();
   renderAdminSchedules();
 }
@@ -674,7 +721,7 @@ function renderMembers(){
     b.disabled = true;
     try{
       await updateDoc(doc(db,"members",m.uid), { status: next });
-      await loadMembers(); renderMembers(); fillWhoSelect();
+      await loadMembers(); renderMembers(); renderAssigneePicker();
     }catch(e){ console.error(e); alert("更新に失敗しました。"); b.disabled = false; }
   });
 }
@@ -704,7 +751,7 @@ $("#btnAddMember").addEventListener("click", async () => {
     });
 
     $("#nmName").value = ""; $("#nmId").value = ""; $("#nmPin").value = "";
-    await loadMembers(); renderMembers(); fillWhoSelect();
+    await loadMembers(); renderMembers(); renderAssigneePicker();
     alert(`追加しました。\n\n表示名：${name}\nID：${id}\n暗証番号：${pin}\n\nこの内容を本人にお伝えください。`);
   }catch(e){
     console.error(e);
@@ -719,34 +766,49 @@ $("#btnAddMember").addEventListener("click", async () => {
   }
 });
 
-function fillWhoSelect(){
+// 担当者はチェックボックスで複数選ぶ。「全員」は選択の一括切替。
+function renderAssigneePicker(){
   const act = cacheMembers.filter(m => m.status === "active");
   $("#tkWho").innerHTML = act.length
-    ? act.map(m => `<option value="${m.uid}">${esc(m.displayName)}</option>`).join("")
-    : `<option value="">（メンバーがいません）</option>`;
+    ? act.map(m => `<label class="pick">
+        <input type="checkbox" class="who" value="${esc(m.uid)}"><span>${esc(m.displayName)}</span>
+      </label>`).join("")
+    : `<div class="empty">有効なメンバーがいません</div>`;
+
+  const boxes = () => [...$$("#tkWho .who")];
+  $("#tkAll").checked = false;
+  $("#tkAll").onchange = () => { boxes().forEach(c => { c.checked = $("#tkAll").checked; }); };
+  // 個別に外したら「全員」の表示も合わせる
+  boxes().forEach(c => { c.onchange = () => {
+    const all = boxes();
+    $("#tkAll").checked = all.length > 0 && all.every(x => x.checked);
+  }; });
 }
 
 /* ===== 管理：タスク ===== */
 $("#btnAddTask").addEventListener("click", async () => {
   clearErr($("#tskErr"));
   const title = $("#tkTitle").value.trim();
-  const who   = $("#tkWho").value;
+  const uids  = [...$$("#tkWho .who")].filter(c => c.checked).map(c => c.value);
   const due   = $("#tkDue").value;
-  if(!title || !who){ showErr($("#tskErr"), "内容と担当を入力してください。"); return; }
+  if(!title){ showErr($("#tskErr"), "内容を入力してください。"); return; }
+  if(!uids.length){ showErr($("#tskErr"), "担当を1人以上選んでください。"); return; }
   $("#btnAddTask").disabled = true;
   try{
     // 担当者は1人でも配列で持つ。progress は全担当者分を「未着手」で初期化する。
     // 初期化を忘れると、その担当者は自分の進捗を一切変更できなくなる（ルールで拒否される）。
     await addDoc(collection(db,"tasks"), {
       title,
-      assigneeUids: [who],
-      progress: { [who]: "未着手" },
+      assigneeUids: uids,
+      progress: Object.fromEntries(uids.map(u => [u, "未着手"])),
       reworkNotes: {},
-      needsApproval: false,        // 承認要否の切替（FR-25）は次段階。既定はオフ
+      needsApproval: $("#tkApproval").checked,
       dueDate: due || null, note: $("#tkNote").value.trim() || null,
       createdBy: me.uid, createdAt: serverTimestamp()
     });
     $("#tkTitle").value = ""; $("#tkDue").value = ""; $("#tkNote").value = "";
+    $("#tkApproval").checked = false; $("#tkAll").checked = false;
+    $$("#tkWho .who").forEach(c => { c.checked = false; });
     await renderAdminTasks(); await renderTasks();
   }catch(e){ console.error(e); showErr($("#tskErr"), "追加できませんでした。"); }
   finally{ $("#btnAddTask").disabled = false; }
@@ -761,14 +823,24 @@ async function renderAdminTasks(){
 
   $("#admTaskList").innerHTML = arr.length
     ? arr.map(t => {
-        const ids = t.assigneeUids || [];
+        const ids  = t.assigneeUids || [];
+        const live = activeAssignees(t);          // 集計は有効なメンバーだけ
+        const gone = ids.length - live.length;
         return `<div class="item">
         <h3>${esc(t.title)}</h3>
         <div class="meta">
-          <span class="${taskDone(t) ? "yes" : "no"}">${doneCount(t)}／${ids.length} 完了</span>
-          <span>担当：${esc(ids.map(nameOf).join("、") || "—")}</span>
+          <span class="${taskDone(t) ? "yes" : "no"}">${doneCount(t)}／${live.length} 完了</span>
+          <span class="pill ${t.needsApproval ? "doing" : "todo"}">${t.needsApproval ? "承認あり" : "承認なし"}</span>
           ${t.dueDate ? `<span>${fmtDate(t.dueDate)}</span>` : ""}
         </div>
+        <div style="margin-top:9px;">
+          ${live.map(u => `<div class="readrow">
+            <span>${esc(nameOf(u))}</span>
+            ${statusPill((t.progress || {})[u] || "未着手")}
+          </div>`).join("")}
+        </div>
+        ${gone > 0 ? `<div class="mini alert">停止中の担当者が${gone}人います（集計から除外しています）</div>` : ""}
+        ${live.length === 0 ? `<div class="mini alert">有効な担当者がいません。このタスクは完了できません</div>` : ""}
       </div>`;
       }).join("")
     : `<div class="empty">タスクがありません</div>`;
@@ -835,7 +907,9 @@ async function renderReadStatus(){
 
     let html = "";
     const tasks = []; tS.forEach(d => tasks.push({ id:d.id, ...d.data() }));
-    const open  = tasks.filter(t => !taskDone(t))
+    // 有効な担当者がいないタスクは確認状況に出しても中身が空になるため除く
+    // （管理タスク一覧には警告つきで表示される）
+    const open  = tasks.filter(t => !taskDone(t) && activeAssignees(t).length > 0)
                        .sort((a,b) => (a.dueDate||"9999").localeCompare(b.dueDate||"9999"));
     if(open.length){
       html += `<h2 class="sec">タスク</h2>`;
