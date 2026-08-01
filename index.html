@@ -100,6 +100,14 @@
   .reworknote{background:#fdf0ee;border-left:4px solid var(--red);border-radius:6px;
     padding:9px 12px;margin-top:8px;font-size:13px;line-height:1.65;color:var(--navy2);}
   .reworknote b{display:block;color:var(--red);font-size:11.5px;font-weight:700;margin-bottom:2px;}
+  /* 完了分・過去分の折りたたみ（FR-21）。見出しがそのまま開閉ボタンになる */
+  .fold{margin-top:18px;border-top:1px solid var(--line);}
+  .fold > summary{display:flex;align-items:center;gap:7px;list-style:none;cursor:pointer;
+    font-family:var(--serif);font-size:15.5px;font-weight:700;color:var(--navy);padding:11px 0;}
+  .fold > summary::-webkit-details-marker{display:none;}
+  .fold > summary::before{content:"▸";color:var(--red);font-size:12px;}
+  .fold[open] > summary::before{content:"▾";}
+
   /* みんなのタスク：既定はサマリ、開くと担当者ごとの進み具合 */
   .left{font-size:12.5px;color:var(--navy2);margin-top:7px;}
   .detail{margin-top:8px;}
@@ -345,7 +353,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
 import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc,
-  updateDoc, query, where, serverTimestamp
+  updateDoc, deleteDoc, query, where, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
 
 /* ===== 設定 ===== */
@@ -439,6 +447,11 @@ function progressButton(t){
     ? `<button class="btn sm ghost" data-undo="${t.id}">完了を取り消す</button>`
     : `<button class="btn sm ghost" data-done="${t.id}">完了にする</button>`;
 }
+
+// 完了分・過去分は折りたたんで残す（FR-21）。消してしまうと、
+// 「終わったかどうか」を後から確認できなくなるため。既定は閉じた状態。
+const fold = (label, n, html) =>
+  `<details class="fold"><summary>${label}（${n}件）</summary>${html}</details>`;
 
 // 確認（既読）ボタン。自分が担当のタスクにだけ出す。
 function readButton(t){
@@ -646,7 +659,7 @@ async function renderTasks(){
     (rest.length
       ? rest.map(card).join("")
       : (rework.length ? "" : `<div class="empty">未完了のタスクはありません</div>`)) +
-    (done.length ? `<h2 class="sec">完了したタスク</h2>` + done.map(card).join("") : "");
+    (done.length ? fold("完了したタスク", done.length, done.map(card).join("")) : "");
 
   badge($("#badgeTask"), attention);
   bindItemButtons();
@@ -705,7 +718,7 @@ async function renderAllTasks(){
 
   $("#allList").innerHTML =
     (open.length ? open.map(card).join("") : `<div class="empty">未完了のタスクはありません</div>`) +
-    (done.length ? `<h2 class="sec">完了したタスク</h2>` + done.map(card).join("") : "");
+    (done.length ? fold("完了したタスク", done.length, done.map(card).join("")) : "");
 
   bindItemButtons();
 }
@@ -744,7 +757,7 @@ async function renderSchedules(){
 
   $("#scheList").innerHTML =
     (up.length ? up.map(s => card(s,false)).join("") : `<div class="empty">これからの予定はありません</div>`) +
-    (past.length ? `<h2 class="sec">過去の予定</h2>` + past.slice(0,10).map(s => card(s,true)).join("") : "");
+    (past.length ? fold("過去の予定", past.length, past.map(s => card(s,true)).join("")) : "");
 
   badge($("#badgeSche"), unread);
   bindItemButtons();
@@ -960,9 +973,30 @@ async function renderAdminTasks(){
         </div>
         ${gone > 0 ? `<div class="mini alert">停止中の担当者が${gone}人います（集計から除外しています）</div>` : ""}
         ${live.length === 0 ? `<div class="mini alert">有効な担当者がいません。このタスクは完了できません</div>` : ""}
+        <div class="row"><button class="btn sm ghost" data-del="${t.id}">削除</button></div>
       </div>`;
       }).join("")
     : `<div class="empty">タスクがありません</div>`;
+
+  $$("[data-del]").forEach(b => { b.onclick = () => {
+    const t = arr.find(x => x.id === b.dataset.del);
+    removeTask(b.dataset.del, t ? t.title : "", b);
+  }; });
+}
+
+// 削除できるのは管理者だけ（ルールでも制限済み）。取り消せないため、
+// タスク名を出して確認する。確認記録（reads）はそのまま残す。
+// 消えたタスクの記録は参照されないため表示に影響せず、reads は
+// 「書き換えない」設計に揃える。
+async function removeTask(taskId, title, btn){
+  if(!confirm(`「${title}」を削除します。\n取り消せません。よろしいですか？`)) return;
+  btn.disabled = true;
+  try{
+    await deleteDoc(doc(db,"tasks",taskId));
+    await renderAdminTasks(); await renderTasks(); await renderAllTasks();
+  }catch(e){
+    console.error(e); alert("削除できませんでした。"); btn.disabled = false;
+  }
 }
 
 /* ===== 管理：承認・差戻（FR-17） ===== */
