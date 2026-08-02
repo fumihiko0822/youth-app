@@ -29,6 +29,12 @@ const db = getFirestore();
 const auth = getAuth();
 
 const REGION = "asia-northeast1";
+const APP_URL = "https://fumihiko0822.github.io/youth-app/";
+
+/* ログは1本の文字列にする。
+   logger.info("文言", {オブジェクト}) の形だと構造化ログになり、
+   firebase functions:log では中身が空行になって読めない。
+   引き継いだ人が最初に使うのはこのコマンドなので、そこで読める形にする。 */
 
 /* 想定外の例外を、原因が分かる文言に変える。
    何もしないと画面には「実行できませんでした」としか出ず、引き継いだ人が
@@ -37,12 +43,12 @@ const REGION = "asia-northeast1";
 function toHttpsError(e, context) {
   if (e instanceof HttpsError) return e;   // 意図して投げたものはそのまま通す
 
-  logger.error("想定外のエラー", {
-    ...context,
-    code: e && e.code,
-    message: e && e.message,
-    stack: e && e.stack,
-  });
+  logger.error(
+    `想定外のエラー fn=${context && context.fn} code=${e && e.code} ` +
+    `caller=${context && context.callerUid} target=${context && context.targetUid} ` +
+    `message=${e && e.message}`
+  );
+  if (e && e.stack) logger.error(e.stack);
 
   const code = e && e.code;
   const text = String((e && e.message) || "");
@@ -141,7 +147,7 @@ exports.resetMemberPassword = onCall({ region: REGION }, async (request) => {
       targetName: target.data().displayName || "",
     });
 
-    logger.info("暗証番号を再設定した", { byUid: me.uid, targetUid });
+    logger.info(`暗証番号を再設定した by=${me.uid} target=${targetUid}`);
     return { ok: true };
   } catch (e) {
     throw toHttpsError(e, { fn: "resetMemberPassword", callerUid, targetUid });
@@ -193,7 +199,7 @@ exports.deleteMember = onCall({ region: REGION }, async (request) => {
       await auth.deleteUser(targetUid);
     } catch (e) {
       if (!e || e.code !== "auth/user-not-found") throw e;
-      logger.warn("Authにアカウントがなかった。掃除だけ続ける", { targetUid });
+      logger.warn(`Authにアカウントがなかった。掃除だけ続ける target=${targetUid}`);
     }
 
     // 2) タスクからこの人への参照を取り除く（タスク自体は消さない）
@@ -256,7 +262,10 @@ exports.deleteMember = onCall({ region: REGION }, async (request) => {
       cleaned: counts,
     });
 
-    logger.info("メンバーを削除した", { byUid: me.uid, targetUid, ...counts });
+    logger.info(
+      `メンバーを削除した by=${me.uid} target=${targetUid} ` +
+      `タスク${counts.tasks}件／確認記録${counts.reads}件／同意${counts.consents}件／リンク${counts.links}件`
+    );
     return { ok: true, counts };
   } catch (e) {
     throw toHttpsError(e, { fn: "deleteMember", callerUid, targetUid });
@@ -322,10 +331,9 @@ exports.setMemberAdmin = onCall({ region: REGION }, async (request) => {
       targetName,
     });
 
-    logger.info(makeAdmin ? "管理者権限を付与した" : "管理者権限を解除した", {
-      byUid: me.uid,
-      targetUid,
-    });
+    logger.info(
+      `${makeAdmin ? "管理者権限を付与した" : "管理者権限を解除した"} by=${me.uid} target=${targetUid}`
+    );
     return { ok: true };
   } catch (e) {
     throw toHttpsError(e, { fn: "setMemberAdmin", callerUid, targetUid });
@@ -359,12 +367,29 @@ async function pushTo(uids, title, body) {
   });
 
   const tokens = Object.keys(owner);
-  if (!tokens.length) return;
+  if (!tokens.length) {
+    // 黙って何もしないと、通知が来ない原因がまったく追えない
+    logger.info(
+      `通知[${title}] 対象${list.length}人／通知を許可した端末が0件のため送信しない`
+    );
+    return;
+  }
 
+  // notification を付けて送る。data だけだと iOS では届かない。
   const res = await getMessaging().sendEachForMulticast({
     tokens,
-    data: { title: String(title), body: String(body || ""), url: "./index.html" },
-    webpush: { headers: { Urgency: "high" } },
+    notification: { title: String(title), body: String(body || "") },
+    webpush: {
+      headers: { Urgency: "high" },
+      notification: {
+        title: String(title),
+        body: String(body || ""),
+        icon: APP_URL + "icon-192.png",
+        badge: APP_URL + "icon-192.png",
+        tag: "youth-app",
+      },
+      fcmOptions: { link: APP_URL },
+    },
   });
 
   // 端末を消した、ホーム画面から外したなどで無効になったトークンを取り除く。
@@ -378,7 +403,7 @@ async function pushTo(uids, title, body) {
       || code === "messaging/invalid-argument") {
       dead.push(tokens[i]);
     } else {
-      logger.warn("通知の送信に失敗", { code, uid: owner[tokens[i]] });
+      logger.warn(`通知の送信に失敗 code=${code} uid=${owner[tokens[i]]}`);
     }
   });
   await Promise.all(dead.map((t) =>
@@ -386,9 +411,10 @@ async function pushTo(uids, title, body) {
       .update({ fcmTokens: FieldValue.arrayRemove(t) })
   ));
 
-  logger.info("通知を送った", {
-    title, 宛先: tokens.length, 成功: res.successCount, 取り除いた: dead.length,
-  });
+  logger.info(
+    `通知[${title}] 対象${list.length}人／宛先${tokens.length}件／` +
+    `成功${res.successCount}件／失敗${res.failureCount}件／無効を除去${dead.length}件`
+  );
 }
 
 /* 新しいタスク → 担当者へ（作った本人には送らない） */
@@ -398,6 +424,7 @@ exports.onTaskCreated = onDocumentCreated(
     const t = event.data && event.data.data();
     if (!t) return;
     const to = (t.assigneeUids || []).filter((u) => u !== t.createdBy);
+    logger.info(`onTaskCreated 起動 title=${t.title} 担当${(t.assigneeUids || []).length}人 宛先${to.length}人`);
     await pushTo(to, "新しいタスク", t.title || "");
   }
 );
@@ -410,6 +437,7 @@ exports.onScheduleCreated = onDocumentCreated(
     if (!s) return;
     const snap = await db.collection("members").where("status", "==", "active").get();
     const to = snap.docs.map((d) => d.id).filter((u) => u !== s.createdBy);
+    logger.info(`onScheduleCreated 起動 title=${s.title} 宛先${to.length}人`);
     await pushTo(to, "新しい予定", (s.title || "") + (s.date ? "（" + s.date + "）" : ""));
   }
 );
@@ -424,7 +452,8 @@ exports.onTaskReworked = onDocumentUpdated(
     const b = before.progress || {};
     const a = after.progress || {};
     const to = Object.keys(a).filter((u) => a[u] === "差戻" && b[u] !== "差戻");
-    if (!to.length) return;
+    if (!to.length) return;   // 進捗の更新は頻繁に起きるので、差戻以外は何も出さない
+    logger.info(`onTaskReworked 起動 title=${after.title} 宛先${to.length}人`);
     await pushTo(to, "タスクが差し戻されました", after.title || "");
   }
 );

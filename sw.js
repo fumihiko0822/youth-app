@@ -19,18 +19,12 @@ firebase.initializeApp({
   appId: "1:819068699473:web:66c31df1c555cb517b0970"
 });
 
-// 通知は data だけを送ってもらい、中身はここで組み立てる。
-// notification 付きで送ると、自動表示とここでの表示が二重になる環境がある。
-firebase.messaging().onBackgroundMessage((payload) => {
-  const d = (payload && payload.data) || {};
-  self.registration.showNotification(d.title || "青年部アプリ", {
-    body: d.body || "",
-    icon: "./icon-192.png",
-    badge: "./icon-192.png",
-    tag: d.tag || "youth-app",
-    data: { url: d.url || "./index.html" }
-  });
-});
+// notification 付きで送ってもらい、表示はSDKに任せる。
+// data だけの送信は iOS では届かないため（Appleのプッシュは
+// 「必ず見える通知になること」を前提にしている）。
+// ここで onBackgroundMessage を定義して自分で showNotification すると、
+// SDKの自動表示と二重になるので、あえて定義しない。
+firebase.messaging();
 
 // 通知を押したら、開いているアプリに戻す。無ければ開く。
 self.addEventListener("notificationclick", (e) => {

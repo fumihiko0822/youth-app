@@ -137,6 +137,7 @@
   .pushbar{background:#fff;border:1px solid var(--line);border-left:5px solid var(--red);
     border-radius:10px;padding:13px 16px;margin-bottom:12px;font-size:13.5px;line-height:1.7;}
   .pushbar b{display:block;font-size:14.5px;margin-bottom:3px;}
+  .pushbar.ok{border-left-color:var(--ok);}
 
   /* タスクに添えるリンク */
   .links{margin-top:9px;padding-top:8px;border-top:1px dashed var(--line);}
@@ -780,9 +781,23 @@ async function renderPushBox(){
 
   let ok = false;
   try{ ok = await isSupported(); }catch(e){ ok = false; }
-  if(!ok || !("Notification" in window)) return;   // 対応していない環境では何も出さない
 
-  if(Notification.permission === "granted") return;
+  // 何も出さないと「設定できている」と誤解される。状態は必ず画面に出す。
+  if(!ok || !("Notification" in window)){
+    show(box);
+    box.innerHTML = `<div class="pushbar"><b>この端末では通知を利用できません</b>
+      iPhoneの場合は、Safariで開いて「ホーム画面に追加」し、そのアイコンから起動してください。
+      Safariのタブや、LINEなどのアプリ内ブラウザでは利用できません。</div>`;
+    return;
+  }
+
+  if(Notification.permission === "granted"){
+    show(box);
+    box.innerHTML = `<div class="pushbar ok"><b>通知は有効です</b>
+      新しいタスク・予定・差戻を、この端末にお知らせします。</div>`;
+    ensureToken();   // トークンは入れ替わることがあるので、起動のたびに確かめる
+    return;
+  }
 
   if(Notification.permission === "denied"){
     // iOSでは一度断ると、アプリの中から聞き直せない
@@ -807,22 +822,30 @@ async function renderPushBox(){
   $("#btnPush").onclick = enablePush;
 }
 
+/* 端末のトークンを取り直して登録する。
+   許可済みでもトークンは入れ替わることがある。登録が古いままだと通知は
+   届かないのに、画面上は何も変わらないため気づけない。起動のたびに確かめる。
+   端末ごとに1つ。複数の端末で許可すれば、そのすべてに届く。 */
+async function ensureToken(){
+  try{
+    const reg = await swReady;
+    const token = await getToken(getMessaging(app), {
+      vapidKey: VAPID_KEY,
+      serviceWorkerRegistration: reg || undefined
+    });
+    if(!token) return false;
+    await updateDoc(doc(db,"members",me.uid), { fcmTokens: arrayUnion(token) });
+    return true;
+  }catch(e){ console.warn("通知トークン:", e); return false; }
+}
+
 async function enablePush(){
   const b = $("#btnPush");
   if(b) b.disabled = true;
   try{
     const perm = await Notification.requestPermission();
     if(perm !== "granted"){ await renderPushBox(); return; }
-
-    const reg = await swReady;
-    const token = await getToken(getMessaging(app), {
-      vapidKey: VAPID_KEY,
-      serviceWorkerRegistration: reg || undefined
-    });
-    if(!token) throw new Error("トークンを取得できませんでした");
-
-    // 端末ごとに1つ。複数の端末で許可すれば、そのすべてに届く。
-    await updateDoc(doc(db,"members",me.uid), { fcmTokens: arrayUnion(token) });
+    if(!(await ensureToken())) throw new Error("トークンを取得できませんでした");
     await renderPushBox();
     alert("通知を受け取る設定にしました。");
   }catch(e){
