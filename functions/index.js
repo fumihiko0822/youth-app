@@ -17,10 +17,12 @@
  */
 
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onDocumentCreated, onDocumentUpdated } = require("firebase-functions/v2/firestore");
 const logger = require("firebase-functions/logger");
 const { initializeApp } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
+const { getMessaging } = require("firebase-admin/messaging");
 
 initializeApp();
 const db = getFirestore();
@@ -329,3 +331,100 @@ exports.setMemberAdmin = onCall({ region: REGION }, async (request) => {
     throw toHttpsError(e, { fn: "setMemberAdmin", callerUid, targetUid });
   }
 });
+
+/* ===== プッシュ通知（FR-7） =====
+   きっかけは Firestore の変化。呼び出し元が Eventarc のため、
+   Callable のような「未認証の呼び出しを許可」の設定は要らない。
+
+   通知は data だけを送り、中身の組み立ては sw.js 側で行う。
+   notification 付きで送ると、自動表示と自前の表示が二重になる環境がある。
+
+   iOS ではホーム画面に追加したアプリでしか通知を受け取れない。
+   トークンが1つも無い人には、そもそも何も送られない。 */
+
+async function pushTo(uids, title, body) {
+  const list = [...new Set(uids)].filter(Boolean);
+  if (!list.length) return;
+
+  const snaps = await Promise.all(
+    list.map((u) => db.collection("members").doc(u).get())
+  );
+
+  const owner = {};   // token => uid（無効だったときに持ち主を辿るため）
+  snaps.forEach((s) => {
+    if (!s.exists) return;
+    const d = s.data();
+    if (d.status !== "active") return;          // 停止中には送らない
+    (d.fcmTokens || []).forEach((t) => { owner[t] = s.id; });
+  });
+
+  const tokens = Object.keys(owner);
+  if (!tokens.length) return;
+
+  const res = await getMessaging().sendEachForMulticast({
+    tokens,
+    data: { title: String(title), body: String(body || ""), url: "./index.html" },
+    webpush: { headers: { Urgency: "high" } },
+  });
+
+  // 端末を消した、ホーム画面から外したなどで無効になったトークンを取り除く。
+  // 放置すると、以後ずっと失敗するトークンに送り続けることになる。
+  const dead = [];
+  res.responses.forEach((r, i) => {
+    if (r.success) return;
+    const code = (r.error && r.error.code) || "";
+    if (code === "messaging/registration-token-not-registered"
+      || code === "messaging/invalid-registration-token"
+      || code === "messaging/invalid-argument") {
+      dead.push(tokens[i]);
+    } else {
+      logger.warn("通知の送信に失敗", { code, uid: owner[tokens[i]] });
+    }
+  });
+  await Promise.all(dead.map((t) =>
+    db.collection("members").doc(owner[t])
+      .update({ fcmTokens: FieldValue.arrayRemove(t) })
+  ));
+
+  logger.info("通知を送った", {
+    title, 宛先: tokens.length, 成功: res.successCount, 取り除いた: dead.length,
+  });
+}
+
+/* 新しいタスク → 担当者へ（作った本人には送らない） */
+exports.onTaskCreated = onDocumentCreated(
+  { region: REGION, document: "tasks/{taskId}" },
+  async (event) => {
+    const t = event.data && event.data.data();
+    if (!t) return;
+    const to = (t.assigneeUids || []).filter((u) => u !== t.createdBy);
+    await pushTo(to, "新しいタスク", t.title || "");
+  }
+);
+
+/* 新しい予定 → 有効なメンバー全員へ（作った本人には送らない） */
+exports.onScheduleCreated = onDocumentCreated(
+  { region: REGION, document: "schedules/{scheduleId}" },
+  async (event) => {
+    const s = event.data && event.data.data();
+    if (!s) return;
+    const snap = await db.collection("members").where("status", "==", "active").get();
+    const to = snap.docs.map((d) => d.id).filter((u) => u !== s.createdBy);
+    await pushTo(to, "新しい予定", (s.title || "") + (s.date ? "（" + s.date + "）" : ""));
+  }
+);
+
+/* 差戻 → 差し戻された本人へ。
+   タスクの更新は進捗が動くたびに起きるので、「差戻」に変わった人だけを拾う。 */
+exports.onTaskReworked = onDocumentUpdated(
+  { region: REGION, document: "tasks/{taskId}" },
+  async (event) => {
+    const before = (event.data.before && event.data.before.data()) || {};
+    const after = (event.data.after && event.data.after.data()) || {};
+    const b = before.progress || {};
+    const a = after.progress || {};
+    const to = Object.keys(a).filter((u) => a[u] === "差戻" && b[u] !== "差戻");
+    if (!to.length) return;
+    await pushTo(to, "タスクが差し戻されました", after.title || "");
+  }
+);

@@ -30,6 +30,12 @@ rules_version = '2';
 //   タスク本体の配列で持たなかったのは、ルールに繰り返し処理がなく
 //   「消してよいのは自分が追加した要素だけ」を配列では表現できないため。
 //   ドキュメントを分ければ、その判定がそのまま delete の条件になる。
+//
+// v10 (2026-08-02)
+//   通知トークンを fcmToken（単数）から fcmTokens（配列）に変えた。
+//   単数だと、後から別の端末で許可したときに前の端末へ届かなくなる。
+//   しかも何のエラーも出ないため、気づけない。本人が自分のドキュメントの
+//   fcmTokens だけを書き換えられる点は単数のときと変わらない。
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -126,7 +132,7 @@ service cloud.firestore {
       allow update: if (isAdmin() && !changesAdminFlag() && !changesOwnStatus(uid))
                     || (isSelf(uid)
                         && request.resource.data.diff(resource.data)
-                             .affectedKeys().hasOnly(['fcmToken']));
+                             .affectedKeys().hasOnly(['fcmTokens']));
       allow delete: if false;
     }
 

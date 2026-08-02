@@ -133,6 +133,11 @@
   .approw:last-child{border-bottom:none;}
   .approw .nm{font-size:13.5px;font-weight:600;}
   .approw .acts{display:flex;gap:7px;}
+  /* 通知の案内 */
+  .pushbar{background:#fff;border:1px solid var(--line);border-left:5px solid var(--red);
+    border-radius:10px;padding:13px 16px;margin-bottom:12px;font-size:13.5px;line-height:1.7;}
+  .pushbar b{display:block;font-size:14.5px;margin-bottom:3px;}
+
   /* タスクに添えるリンク */
   .links{margin-top:9px;padding-top:8px;border-top:1px dashed var(--line);}
   .links.bare{border-top:none;padding-top:0;margin-top:8px;}
@@ -295,6 +300,7 @@
   <main>
     <!-- マイタスク -->
     <section id="paneTask">
+      <div id="pushBox" class="hidden"></div>
       <div id="taskList" class="cards"></div>
     </section>
 
@@ -403,11 +409,14 @@ import {
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
 import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc,
-  updateDoc, deleteDoc, query, where, serverTimestamp
+  updateDoc, deleteDoc, query, where, serverTimestamp, arrayUnion
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
 import {
   getFunctions, httpsCallable
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-functions.js";
+import {
+  getMessaging, getToken, onMessage, isSupported
+} from "https://www.gstatic.com/firebasejs/11.0.2/firebase-messaging.js";
 
 /* ===== 設定 ===== */
 const firebaseConfig = {
@@ -420,6 +429,9 @@ const firebaseConfig = {
 };
 const MAIL_DOMAIN = "youth.local";   // ID を内部的にメール形式へ変換するための固定文字列
 const CONSENT_VERSION = "1.0";
+// 通知の公開鍵。公開前提の情報（apiKey と同じ扱い）。
+// 作り直すと、それまでに許可した端末がすべて無効になるので触らないこと。
+const VAPID_KEY = "BOkpzeEIzzPwGYvhM_7Yllk3_9VCd-y9GF5xG9uPPrP2y8EAfo5xkPjlglqc-P9k8NCFJKSo5-jHMhY5Zjy0lr0";
 
 const app  = initializeApp(firebaseConfig);
 const auth = getAuth(app);
@@ -427,6 +439,12 @@ const db   = getFirestore(app);
 // 関数のリージョンは asia-northeast1（東京）。既定の米国リージョンを指すと
 // 呼び出せないうえ、データ所在の方針とも食い違うため必ず指定する。
 const fns  = getFunctions(app, "asia-northeast1");
+
+/* サービスワーカーの登録。通知のトークン取得でこの登録を明示的に渡すため、
+   結果を約束として持っておく（FCM 既定の別ファイルを作らず sw.js に寄せている）。 */
+const swReady = ("serviceWorker" in navigator)
+  ? navigator.serviceWorker.register("sw.js").catch(e => { console.warn("SW:", e); return null; })
+  : Promise.resolve(null);
 
 /* ===== 状態 ===== */
 let me = null;          // { uid, displayName, isAdmin, status }
@@ -746,6 +764,97 @@ $("#btnConsent").addEventListener("click", async () => {
   }
 });
 
+/* ===== プッシュ通知（FR-7） =====
+   iOSはホーム画面に追加したアプリからしか通知を使えない。Safariのタブでは
+   PushManager に触れられないため、押しても必ず失敗するボタンは出さない。
+   許可の要求は、必ずボタンの操作の中から呼ぶ（iOSの要件）。 */
+const isStandalone = () =>
+  window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent);
+
+let pushListening = false;
+
+async function renderPushBox(){
+  const box = $("#pushBox");
+  box.innerHTML = ""; hide(box);
+
+  let ok = false;
+  try{ ok = await isSupported(); }catch(e){ ok = false; }
+  if(!ok || !("Notification" in window)) return;   // 対応していない環境では何も出さない
+
+  if(Notification.permission === "granted") return;
+
+  if(Notification.permission === "denied"){
+    // iOSでは一度断ると、アプリの中から聞き直せない
+    show(box);
+    box.innerHTML = `<div class="pushbar"><b>通知が拒否されています</b>
+      端末の設定からこのアプリの通知を許可してください。アプリの中からは変更できません。</div>`;
+    return;
+  }
+
+  if(isIOS() && !isStandalone()){
+    show(box);
+    box.innerHTML = `<div class="pushbar"><b>通知を受け取るには</b>
+      Safariの共有ボタンから「ホーム画面に追加」し、追加されたアイコンから開いてください。
+      Safariのタブのままでは通知を受け取れません。</div>`;
+    return;
+  }
+
+  show(box);
+  box.innerHTML = `<div class="pushbar"><b>新しいタスクや予定をお知らせします</b>
+    差し戻されたときもお知らせします。
+    <div class="row"><button class="btn sm red" id="btnPush">通知を受け取る</button></div></div>`;
+  $("#btnPush").onclick = enablePush;
+}
+
+async function enablePush(){
+  const b = $("#btnPush");
+  if(b) b.disabled = true;
+  try{
+    const perm = await Notification.requestPermission();
+    if(perm !== "granted"){ await renderPushBox(); return; }
+
+    const reg = await swReady;
+    const token = await getToken(getMessaging(app), {
+      vapidKey: VAPID_KEY,
+      serviceWorkerRegistration: reg || undefined
+    });
+    if(!token) throw new Error("トークンを取得できませんでした");
+
+    // 端末ごとに1つ。複数の端末で許可すれば、そのすべてに届く。
+    await updateDoc(doc(db,"members",me.uid), { fcmTokens: arrayUnion(token) });
+    await renderPushBox();
+    alert("通知を受け取る設定にしました。");
+  }catch(e){
+    console.error(e);
+    alert("通知を設定できませんでした。\nホーム画面に追加したアイコンから開いているか、通信状況をご確認ください。");
+    if(b) b.disabled = false;
+  }
+}
+
+// アプリを開いている間は通知が出ないので、一覧を読み直して反映する
+async function listenForeground(){
+  if(pushListening) return;
+  try{
+    if(!(await isSupported())) return;
+    onMessage(getMessaging(app), async () => {
+      await loadMyReads(); await loadTaskLinks();
+      await renderTasks(); await renderAllTasks(); await renderSchedules();
+      if(me && me.isAdmin) await renderAdminTasks();
+    });
+    pushListening = true;
+  }catch(e){ /* 対応していない環境では何もしない */ }
+}
+
+// アイコンのバッジ。iOS 16.4以上のホーム画面Webアプリと、対応ブラウザのみ。
+async function syncBadge(n){
+  try{
+    if(!("setAppBadge" in navigator)) return;
+    if(n > 0) await navigator.setAppBadge(n);
+    else await navigator.clearAppBadge();
+  }catch(e){ /* 未対応なら黙って何もしない */ }
+}
+
 /* ===== 起動 ===== */
 
 // ログインのたびに画面の表示状態を初期化する。
@@ -764,8 +873,9 @@ function resetView(){
   // 前のセッションで描画した中身を残さない
   cacheMembers = [];
   cacheLinks = {};
-  ["#taskList","#allList","#scheList","#memList","#admTaskList","#admScheList","#readList","#tkWho","#approvalBox"]
+  ["#taskList","#allList","#scheList","#memList","#admTaskList","#admScheList","#readList","#tkWho","#approvalBox","#pushBox"]
     .forEach(s => { $(s).innerHTML = ""; });
+  hide($("#pushBox"));
   $("#tkAll").checked = false; $("#tkApproval").checked = false;
   resetLinkRows();
   hide($("#approvalBox"));
@@ -785,6 +895,8 @@ async function startApp(){
   await Promise.all([ renderTasks(), renderAllTasks(), renderSchedules() ]);
   // 管理者は、管理タブを開く前に承認待ちの件数バッジを出しておく
   if(me.isAdmin) await renderAdminTasks();
+  await renderPushBox();
+  listenForeground();
 }
 
 async function loadMyReads(){
@@ -865,6 +977,7 @@ async function renderTasks(){
     (done.length ? fold("完了したタスク", done.length, done.map(card).join("")) : "");
 
   badge($("#badgeTask"), attention);
+  syncBadge(attention);          // ホーム画面アイコンのバッジ（対応環境のみ）
   bindItemButtons();
 }
 
@@ -1558,12 +1671,6 @@ async function renderReadStatus(){
   }
 }
 
-/* ===== PWA ===== */
-if("serviceWorker" in navigator){
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("sw.js").catch(e => console.warn("SW:", e));
-  });
-}
 </script>
 </body>
 </html>

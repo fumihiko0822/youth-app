@@ -2,6 +2,48 @@
    役割：アプリの「見た目」だけを端末に保存し、2回目以降の起動を速くする。
    データ（Firebase）は毎回ネットから取るため、ここでは触らない。 */
 
+/* ---- プッシュ通知（FCM） ----
+   アプリを閉じている間の通知はここで受け取る。
+   FCM の既定は firebase-messaging-sw.js という別ファイルだが、同じスコープに
+   サービスワーカーを2つ置くと競合するため、このファイルに寄せている。
+   （画面側は getToken() にこの登録を明示的に渡している） */
+importScripts("https://www.gstatic.com/firebasejs/11.0.2/firebase-app-compat.js");
+importScripts("https://www.gstatic.com/firebasejs/11.0.2/firebase-messaging-compat.js");
+
+firebase.initializeApp({
+  apiKey: "AIzaSyB91rmaTLGGC1XSVWsRHjh4AKLAMS8G7DQ",
+  authDomain: "ajramiyazaki-dx.firebaseapp.com",
+  projectId: "ajramiyazaki-dx",
+  storageBucket: "ajramiyazaki-dx.firebasestorage.app",
+  messagingSenderId: "819068699473",
+  appId: "1:819068699473:web:66c31df1c555cb517b0970"
+});
+
+// 通知は data だけを送ってもらい、中身はここで組み立てる。
+// notification 付きで送ると、自動表示とここでの表示が二重になる環境がある。
+firebase.messaging().onBackgroundMessage((payload) => {
+  const d = (payload && payload.data) || {};
+  self.registration.showNotification(d.title || "青年部アプリ", {
+    body: d.body || "",
+    icon: "./icon-192.png",
+    badge: "./icon-192.png",
+    tag: d.tag || "youth-app",
+    data: { url: d.url || "./index.html" }
+  });
+});
+
+// 通知を押したら、開いているアプリに戻す。無ければ開く。
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || "./index.html";
+  e.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+      for (const c of list) { if ("focus" in c) return c.focus(); }
+      if (self.clients.openWindow) return self.clients.openWindow(url);
+    })
+  );
+});
+
 const CACHE = "youth-app-v1";
 const SHELL = [
   "./",
