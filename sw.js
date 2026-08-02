@@ -38,6 +38,41 @@ self.addEventListener("notificationclick", (e) => {
   );
 });
 
+/* ---- アイコンのバッジ ----
+   通知を受け取った時点で数字を増やす。アプリを開くまで変わらないと、
+   バナーを見逃したときに未対応があることに気づけないため。
+   ここでは「1つ増やす」だけを行い、正確な件数はアプリを開いたときに
+   画面側が入れ直す。保存先は画面側と共有している。 */
+const BADGE_CACHE = "youth-app-badge";
+const BADGE_KEY = "badge-count";
+
+async function readBadge() {
+  try {
+    const c = await caches.open(BADGE_CACHE);
+    const r = await c.match(BADGE_KEY);
+    return r ? (Number(await r.text()) || 0) : 0;
+  } catch (e) { return 0; }
+}
+async function writeBadge(n) {
+  try {
+    const c = await caches.open(BADGE_CACHE);
+    await c.put(BADGE_KEY, new Response(String(n)));
+  } catch (e) { /* 使えない環境では何もしない */ }
+}
+
+// 通知の表示はFCMのSDKが行う。ここではバッジだけを更新する。
+self.addEventListener("push", (e) => {
+  e.waitUntil((async () => {
+    const n = (await readBadge()) + 1;
+    await writeBadge(n);
+    try {
+      if (self.navigator && "setAppBadge" in self.navigator) {
+        await self.navigator.setAppBadge(n);
+      }
+    } catch (err) { /* 未対応なら何もしない */ }
+  })());
+});
+
 const CACHE = "youth-app-v1";
 const SHELL = [
   "./",
@@ -56,7 +91,9 @@ self.addEventListener("install", (e) => {
 self.addEventListener("activate", (e) => {
   e.waitUntil(
     caches.keys()
-      .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+      // バッジの保存先は消さない（消すと数字が0に戻ってしまう）
+      .then(keys => Promise.all(
+        keys.filter(k => k !== CACHE && k !== BADGE_CACHE).map(k => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });

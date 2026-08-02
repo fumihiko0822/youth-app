@@ -410,7 +410,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js";
 import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc,
-  updateDoc, deleteDoc, query, where, serverTimestamp, arrayUnion
+  updateDoc, deleteDoc, query, where, serverTimestamp, arrayUnion, arrayRemove
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
 import {
   getFunctions, httpsCallable
@@ -705,7 +705,16 @@ async function doLogin(){
   }
 }
 
-$("#btnLogout").addEventListener("click", () => signOut(auth));
+$("#btnLogout").addEventListener("click", async () => {
+  const b = $("#btnLogout");
+  b.disabled = true;
+  // この端末のトークンを外してからログアウトする。外さないと、次に別の人が
+  // ログインしたとき、前の人あての通知がこの端末に届き続ける。
+  await releaseToken();
+  await syncBadge(0);
+  b.disabled = false;
+  signOut(auth);
+});
 $("#btnConsentNo").addEventListener("click", () => signOut(auth));
 
 onAuthStateChanged(auth, async (user) => {
@@ -869,13 +878,39 @@ async function listenForeground(){
   }catch(e){ /* 対応していない環境では何もしない */ }
 }
 
-// アイコンのバッジ。iOS 16.4以上のホーム画面Webアプリと、対応ブラウザのみ。
+/* アイコンのバッジ。iOS 16.4以上のホーム画面Webアプリと、対応ブラウザのみ。
+   Service Worker は通知のたびに数字を1つ増やすだけなので、アプリを開いた
+   ここで正確な件数に入れ直す。保存先（Cache）は Service Worker と共有する。 */
+const BADGE_CACHE = "youth-app-badge";
+const BADGE_KEY = "badge-count";
+
 async function syncBadge(n){
+  try{
+    const c = await caches.open(BADGE_CACHE);
+    await c.put(BADGE_KEY, new Response(String(n)));
+  }catch(e){ /* Cache が使えない環境では保存だけ諦める */ }
   try{
     if(!("setAppBadge" in navigator)) return;
     if(n > 0) await navigator.setAppBadge(n);
     else await navigator.clearAppBadge();
   }catch(e){ /* 未対応なら黙って何もしない */ }
+}
+
+/* この端末のトークンを、いまログインしている人から外す。
+   トークンは端末に紐づくもので、アカウントには紐づかない。外さずに別の人が
+   ログインすると、前の人あての通知がこの端末に届き続ける。 */
+async function releaseToken(){
+  try{
+    if(!me) return;
+    if(!("Notification" in window) || Notification.permission !== "granted") return;
+    if(!(await isSupported())) return;
+    const reg = await swReady;
+    const token = await getToken(getMessaging(app), {
+      vapidKey: VAPID_KEY,
+      serviceWorkerRegistration: reg || undefined
+    });
+    if(token) await updateDoc(doc(db,"members",me.uid), { fcmTokens: arrayRemove(token) });
+  }catch(e){ console.warn("トークンの解除:", e); }
 }
 
 /* ===== 起動 ===== */
