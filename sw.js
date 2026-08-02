@@ -45,31 +45,40 @@ self.addEventListener("notificationclick", (e) => {
    画面側が入れ直す。保存先は画面側と共有している。 */
 const BADGE_CACHE = "youth-app-badge";
 const BADGE_KEY = "badge-count";
+const BADGE_STATUS_KEY = "badge-status";
 
-async function readBadge() {
+async function readCache(key) {
   try {
     const c = await caches.open(BADGE_CACHE);
-    const r = await c.match(BADGE_KEY);
-    return r ? (Number(await r.text()) || 0) : 0;
-  } catch (e) { return 0; }
+    const r = await c.match(key);
+    return r ? await r.text() : null;
+  } catch (e) { return null; }
 }
-async function writeBadge(n) {
+async function writeCache(key, value) {
   try {
     const c = await caches.open(BADGE_CACHE);
-    await c.put(BADGE_KEY, new Response(String(n)));
+    await c.put(key, new Response(String(value)));
   } catch (e) { /* 使えない環境では何もしない */ }
 }
 
 // 通知の表示はFCMのSDKが行う。ここではバッジだけを更新する。
+// 結果を残すのは、うまくいかなかったときに画面側で知らせるため。
+// 黙って何もしないと、バッジが増えない理由が誰にも分からない。
 self.addEventListener("push", (e) => {
   e.waitUntil((async () => {
-    const n = (await readBadge()) + 1;
-    await writeBadge(n);
+    const n = (Number(await readCache(BADGE_KEY)) || 0) + 1;
+    await writeCache(BADGE_KEY, n);
+
+    if (!(self.navigator && "setAppBadge" in self.navigator)) {
+      await writeCache(BADGE_STATUS_KEY, "unsupported");
+      return;
+    }
     try {
-      if (self.navigator && "setAppBadge" in self.navigator) {
-        await self.navigator.setAppBadge(n);
-      }
-    } catch (err) { /* 未対応なら何もしない */ }
+      await self.navigator.setAppBadge(n);
+      await writeCache(BADGE_STATUS_KEY, "ok:" + n);
+    } catch (err) {
+      await writeCache(BADGE_STATUS_KEY, "error:" + ((err && err.message) || "unknown"));
+    }
   })());
 });
 

@@ -801,9 +801,14 @@ async function renderPushBox(){
   }
 
   if(Notification.permission === "granted"){
+    // バッジの更新に失敗していたら、その事実を伝える（黙って増えないのを避ける）
+    const st = await readBadgeStatus();
+    const warn = (st && !st.startsWith("ok"))
+      ? `<br><span style="color:var(--red)">※ この端末ではアイコンの数字を更新できません（${esc(st)}）。
+         通知そのものは届きます。</span>` : "";
     show(box);
     box.innerHTML = `<div class="pushbar ok"><b>通知は有効です</b>
-      新しいタスク・予定・差戻を、この端末にお知らせします。</div>`;
+      新しいタスク・予定・差戻を、この端末にお知らせします。${warn}</div>`;
     ensureToken();   // トークンは入れ替わることがあるので、起動のたびに確かめる
     return;
   }
@@ -883,6 +888,16 @@ async function listenForeground(){
    ここで正確な件数に入れ直す。保存先（Cache）は Service Worker と共有する。 */
 const BADGE_CACHE = "youth-app-badge";
 const BADGE_KEY = "badge-count";
+const BADGE_STATUS_KEY = "badge-status";
+
+// Service Worker が最後に残したバッジ更新の結果（うまくいかない理由を知らせるため）
+async function readBadgeStatus(){
+  try{
+    const c = await caches.open(BADGE_CACHE);
+    const r = await c.match(BADGE_STATUS_KEY);
+    return r ? await r.text() : null;
+  }catch(e){ return null; }
+}
 
 async function syncBadge(n){
   try{
@@ -946,16 +961,36 @@ async function startApp(){
   $("#meRole").textContent = me.isAdmin ? "管理者" : "";
   me.isAdmin ? show($("#tabAdmin")) : hide($("#tabAdmin"));
   show($("#appView"));
-  await loadMyReads();
-  // 担当者名の表示に使う。ルール上、有効なメンバーは members を全員読める。
-  await loadMembers();
-  await loadTaskLinks();
+
+  // 読み込み中と分かるようにする。空のままだと「タスクが無い」と誤解される。
+  ["#taskList","#allList","#scheList"].forEach(s => {
+    $(s).innerHTML = `<div class="empty">読み込み中…</div>`;
+  });
+
+  // 3つを順番に待つと、その分だけ何も出ない時間が延びる。まとめて取る。
+  // （members は担当者名の表示に使う。有効なメンバーは全員読める）
+  await Promise.all([ loadMyReads(), loadMembers(), loadTaskLinks() ]);
   await Promise.all([ renderTasks(), renderAllTasks(), renderSchedules() ]);
   // 管理者は、管理タブを開く前に承認待ちの件数バッジを出しておく
   if(me.isAdmin) await renderAdminTasks();
   await renderPushBox();
   listenForeground();
 }
+
+/* iOSはアプリを閉じている間ページを止める。通知から開き直したときに
+   中身が古いまま／読み込み途中のままになるのを防ぐため、戻ってきたら読み直す。 */
+let refreshing = false;
+document.addEventListener("visibilitychange", async () => {
+  if(document.visibilityState !== "visible" || !me || refreshing) return;
+  refreshing = true;
+  try{
+    await Promise.all([ loadMyReads(), loadTaskLinks() ]);
+    await Promise.all([ renderTasks(), renderAllTasks(), renderSchedules() ]);
+    if(me.isAdmin) await renderAdminTasks();
+    await renderPushBox();
+  }catch(e){ console.warn("再読み込み:", e); }
+  finally{ refreshing = false; }
+});
 
 async function loadMyReads(){
   myReads = new Set();
@@ -969,7 +1004,7 @@ $$("nav.tabs button").forEach(b => b.addEventListener("click", () => {
   b.classList.add("on");
   const t = b.dataset.tab;
   hide($("#paneTask")); hide($("#paneAll")); hide($("#paneSche")); hide($("#paneAdmin"));
-  if(t === "task") show($("#paneTask"));
+  if(t === "task"){ show($("#paneTask")); renderTasks(); }
   if(t === "all"){ show($("#paneAll")); renderAllTasks(); }
   if(t === "sche") show($("#paneSche"));
   if(t === "admin"){ show($("#paneAdmin")); loadAdmin(); }
