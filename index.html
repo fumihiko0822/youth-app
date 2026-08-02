@@ -412,12 +412,6 @@ import {
   getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc,
   updateDoc, deleteDoc, query, where, serverTimestamp, arrayUnion, arrayRemove
 } from "https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js";
-import {
-  getFunctions, httpsCallable
-} from "https://www.gstatic.com/firebasejs/11.0.2/firebase-functions.js";
-import {
-  getMessaging, getToken, onMessage, isSupported
-} from "https://www.gstatic.com/firebasejs/11.0.2/firebase-messaging.js";
 
 /* ===== 設定 ===== */
 const firebaseConfig = {
@@ -437,9 +431,26 @@ const VAPID_KEY = "BOkpzeEIzzPwGYvhM_7Yllk3_9VCd-y9GF5xG9uPPrP2y8EAfo5xkPjlglqc-
 const app  = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db   = getFirestore(app);
-// 関数のリージョンは asia-northeast1（東京）。既定の米国リージョンを指すと
-// 呼び出せないうえ、データ所在の方針とも食い違うため必ず指定する。
-const fns  = getFunctions(app, "asia-northeast1");
+/* 関数と通知のSDKは、最初の表示に要らない。起動時にまとめて読み込むと
+   その分だけ表示が遅れるので、使うときに読み込む。 */
+let _fnsMod = null, _fnsInst = null;
+async function callFn(name, data){
+  if(!_fnsMod){
+    _fnsMod = await import("https://www.gstatic.com/firebasejs/11.0.2/firebase-functions.js");
+    // リージョンは asia-northeast1（東京）。既定の米国リージョンを指すと
+    // 呼び出せないうえ、データ所在の方針とも食い違うため必ず指定する。
+    _fnsInst = _fnsMod.getFunctions(app, "asia-northeast1");
+  }
+  return _fnsMod.httpsCallable(_fnsInst, name)(data);
+}
+
+let _msgMod = null;
+async function msgMod(){
+  if(!_msgMod){
+    _msgMod = await import("https://www.gstatic.com/firebasejs/11.0.2/firebase-messaging.js");
+  }
+  return _msgMod;
+}
 
 /* サービスワーカーの登録。通知のトークン取得でこの登録を明示的に渡すため、
    結果を約束として持っておく（FCM 既定の別ファイルを作らず sw.js に寄せている）。 */
@@ -789,7 +800,7 @@ async function renderPushBox(){
   box.innerHTML = ""; hide(box);
 
   let ok = false;
-  try{ ok = await isSupported(); }catch(e){ ok = false; }
+  try{ ok = await (await msgMod()).isSupported(); }catch(e){ ok = false; }
 
   // 何も出さないと「設定できている」と誤解される。状態は必ず画面に出す。
   if(!ok || !("Notification" in window)){
@@ -843,6 +854,7 @@ async function renderPushBox(){
 async function ensureToken(){
   try{
     const reg = await swReady;
+    const { getMessaging, getToken } = await msgMod();
     const token = await getToken(getMessaging(app), {
       vapidKey: VAPID_KEY,
       serviceWorkerRegistration: reg || undefined
@@ -873,6 +885,7 @@ async function enablePush(){
 async function listenForeground(){
   if(pushListening) return;
   try{
+    const { isSupported, getMessaging, onMessage } = await msgMod();
     if(!(await isSupported())) return;
     onMessage(getMessaging(app), async () => {
       await loadMyReads(); await loadTaskLinks();
@@ -918,6 +931,7 @@ async function releaseToken(){
   try{
     if(!me) return;
     if(!("Notification" in window) || Notification.permission !== "granted") return;
+    const { isSupported, getMessaging, getToken } = await msgMod();
     if(!(await isSupported())) return;
     const reg = await swReady;
     const token = await getToken(getMessaging(app), {
@@ -967,12 +981,24 @@ async function startApp(){
     $(s).innerHTML = `<div class="empty">読み込み中…</div>`;
   });
 
-  // 3つを順番に待つと、その分だけ何も出ない時間が延びる。まとめて取る。
-  // （members は担当者名の表示に使う。有効なメンバーは全員読める）
-  await Promise.all([ loadMyReads(), loadMembers(), loadTaskLinks() ]);
-  await Promise.all([ renderTasks(), renderAllTasks(), renderSchedules() ]);
+  /* マイタスクを最優先で出す。
+     必要なのは「自分のタスク」と「自分の確認記録」の2つだけで、
+     メンバー一覧・リンク・全タスク・予定は無くても描ける。
+     以前はそれらを全部待ってから描いていたため、待ち時間が積み上がっていた。 */
+  const pTasks = fetchMyTasks();
+  const pReads = loadMyReads();
+  const pRest  = Promise.all([ loadMembers(), loadTaskLinks() ]);
+
+  const [tasks] = await Promise.all([ pTasks, pReads ]);
+  await renderTasks(tasks);          // ← ここで最初の表示
+
+  // ここから先は後回しでよいもの。リンクが入るのでマイタスクは描き直す。
+  await pRest;
+  await renderTasks(tasks);
+  const all = await fetchAllTasks();          // 全タスクの取得は1回だけ
+  await Promise.all([ renderAllTasks(all), renderSchedules() ]);
   // 管理者は、管理タブを開く前に承認待ちの件数バッジを出しておく
-  if(me.isAdmin) await renderAdminTasks();
+  if(me.isAdmin) await renderAdminTasks(all);
   await renderPushBox();
   listenForeground();
 }
@@ -1027,8 +1053,8 @@ async function fetchMyTasks(){
   return arr;
 }
 
-async function renderTasks(){
-  const list = await fetchMyTasks();
+async function renderTasks(pre){
+  const list = pre || await fetchMyTasks();
   const box = $("#taskList");
   const open   = list.filter(t => myProgress(t) !== "完了");
   const done   = list.filter(t => myProgress(t) === "完了");
@@ -1077,11 +1103,18 @@ async function renderTasks(){
 /* ===== みんなのタスク（FR-22） ===== */
 // タスクは全員が読める（絞り込みなしのクエリが通る）。
 // 並び替えは取得後にJS側で行う（複合インデックスが要るクエリを書かないため）。
-async function renderAllTasks(){
+// 全タスクの取得。「みんな」と管理一覧で同じものを使う。
+// 別々に引くと、管理者の起動時に同じ問い合わせが2回走る。
+async function fetchAllTasks(){
   const s = await getDocs(collection(db,"tasks"));
   const arr = [];
   s.forEach(d => arr.push({ id:d.id, ...d.data() }));
   arr.sort((a,b) => (a.dueDate||"9999").localeCompare(b.dueDate||"9999"));
+  return arr;
+}
+
+async function renderAllTasks(pre){
+  const arr = pre || await fetchAllTasks();
 
   const nameOf = (uid) => (cacheMembers.find(m => m.uid === uid)?.displayName) || "—";
   const open = arr.filter(t => !taskDone(t));
@@ -1237,9 +1270,6 @@ async function loadAdmin(){
    他人のパスワードは Admin SDK でしか変更できないため、関数を経由する。
    管理者権限も同じ理由（ルールでクライアントからの変更を禁じている）。
    ここでのボタンの出し分けは操作性のためで、防御ではない。 */
-const callResetPassword = httpsCallable(fns, "resetMemberPassword");
-const callSetAdmin      = httpsCallable(fns, "setMemberAdmin");
-const callDeleteMember  = httpsCallable(fns, "deleteMember");
 
 // 関数が付けた説明はそのまま出す。原因が分かる文言を関数側で作っているため、
 // コードが internal でも握りつぶさない。素の "INTERNAL" のときだけ一般的な文言にする。
@@ -1275,7 +1305,7 @@ function openPinBox(btn){
     const pin = inp.value.trim();
     send.disabled = true;
     try{
-      await callResetPassword({ uid, password: pin });
+      await callFn("resetMemberPassword", { uid, password: pin });
       box.remove();
       // UIDは変わらないので、担当タスクや確認記録はそのまま引き継がれる
       alert(`暗証番号を再設定しました。\n\n表示名：${m ? m.displayName : ""}\nID：${m ? m.loginId : ""}\n新しい暗証番号：${pin}\n\nこの内容を本人にお伝えください。`);
@@ -1298,7 +1328,7 @@ async function toggleAdmin(btn){
 
   btn.disabled = true;
   try{
-    await callSetAdmin({ uid, makeAdmin });
+    await callFn("setMemberAdmin", { uid, makeAdmin });
     await loadMembers(); renderMembers(); renderAssigneePicker();
   }catch(e){
     console.error(e); alert(fnErr(e)); btn.disabled = false;
@@ -1335,7 +1365,7 @@ function openDeleteBox(btn){
   send.onclick   = async () => {
     send.disabled = true;
     try{
-      const res = await callDeleteMember({ uid });
+      const res = await callFn("deleteMember", { uid });
       const c = (res && res.data && res.data.counts) || {};
       box.remove();
       await loadMembers(); renderMembers(); renderAssigneePicker();
@@ -1503,11 +1533,8 @@ $("#btnAddTask").addEventListener("click", async () => {
   finally{ $("#btnAddTask").disabled = false; }
 });
 
-async function renderAdminTasks(){
-  const s = await getDocs(collection(db,"tasks"));
-  const arr = [];
-  s.forEach(d => arr.push({ id:d.id, ...d.data() }));
-  arr.sort((a,b) => (a.dueDate||"9999").localeCompare(b.dueDate||"9999"));
+async function renderAdminTasks(pre){
+  const arr = pre || await fetchAllTasks();
   const nameOf = (uid) => (cacheMembers.find(m => m.uid === uid)?.displayName) || "—";
 
   renderApprovals(arr, nameOf);
