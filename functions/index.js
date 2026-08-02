@@ -23,6 +23,7 @@ const { initializeApp } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { getMessaging } = require("firebase-admin/messaging");
+const { getStorage } = require("firebase-admin/storage");
 
 initializeApp();
 const db = getFirestore();
@@ -30,6 +31,7 @@ const auth = getAuth();
 
 const REGION = "asia-northeast1";
 const APP_URL = "https://fumihiko0822.github.io/youth-app/";
+const BUCKET = "ajramiyazaki-dx.firebasestorage.app";
 
 /* ログは1本の文字列にする。
    logger.info("文言", {オブジェクト}) の形だと構造化ログになり、
@@ -228,9 +230,21 @@ exports.deleteMember = onCall({ region: REGION }, async (request) => {
     const consentSnap = await db.collection("consents").where("uid", "==", targetUid).get();
     consentSnap.docs.forEach((d) => writes.push({ op: "delete", ref: d.ref }));
 
-    // この人が追加したリンクも消す（確認記録・同意記録と同じ扱い）
+    // この人が追加したリンク・添付ファイルも消す（確認記録・同意記録と同じ扱い）
     const linkSnap = await db.collection("taskLinks").where("byUid", "==", targetUid).get();
     linkSnap.docs.forEach((d) => writes.push({ op: "delete", ref: d.ref }));
+
+    // 添付ファイルは Storage の実体も消す。Firestore の記録だけ消すと、
+    // 誰からも見えないファイルが容量だけ使い続けることになる。
+    const paths = linkSnap.docs.map((d) => d.data().storagePath).filter(Boolean);
+    for (const path of paths) {
+      try {
+        await getStorage().bucket(BUCKET).file(path).delete();
+      } catch (e) {
+        // すでに無い場合は成功として扱い、掃除を続ける
+        logger.warn(`ファイル本体の削除に失敗 path=${path} code=${e && e.code}`);
+      }
+    }
 
     // 4) アカウント本体
     writes.push({ op: "delete", ref: targetRef });

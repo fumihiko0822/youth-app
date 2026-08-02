@@ -452,6 +452,15 @@ async function msgMod(){
   return _msgMod;
 }
 
+let _stMod = null, _stInst = null;
+async function storageApi(){
+  if(!_stMod){
+    _stMod = await import("https://www.gstatic.com/firebasejs/11.0.2/firebase-storage.js");
+    _stInst = _stMod.getStorage(app);
+  }
+  return { m: _stMod, st: _stInst };
+}
+
 /* サービスワーカーの登録。通知のトークン取得でこの登録を明示的に渡すため、
    結果を約束として持っておく（FCM 既定の別ファイルを作らず sw.js に寄せている）。 */
 const swReady = ("serviceWorker" in navigator)
@@ -557,6 +566,12 @@ function readButton(t){
 // 押しただけでスクリプトが動いてしまう。
 const isSafeUrl = (u) => /^https?:\/\//i.test(String(u || "").trim());
 
+const MAX_FILE = 10 * 1024 * 1024;   // Storageのルール側と同じ上限
+const fmtSize = (n) =>
+  n >= 1024 * 1024 ? (n / 1024 / 1024).toFixed(1) + "MB"
+  : n >= 1024      ? Math.round(n / 1024) + "KB"
+  :                  n + "B";
+
 // ラベル未指定のときの表示。ドライブの生URLは人が読めないため置き換える。
 function linkLabel(url, label){
   if(label) return label;
@@ -594,22 +609,25 @@ function linksBlock(t){
 
   const rows = list.map(l => {
     const who = (cacheMembers.find(m => m.uid === l.byUid) || {}).displayName || l.byName || "—";
-    const label = esc(linkLabel(l.url, l.label));
+    // kind が無い古い記録はリンクとして扱う
+    const isFile = l.kind === "file";
+    const label = esc(isFile ? (l.label || "ファイル") : linkLabel(l.url, l.label));
     // 表示のときにもスキームを確かめる。保存済みの値が不正でも、ここで必ず止める。
     const body = isSafeUrl(l.url)
       ? `<a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${label}</a>`
-      : `<span class="bad">${label}（開けないリンク）</span>`;
+      : `<span class="bad">${label}（開けません）</span>`;
     return `<div class="linkrow">
-      <span class="lk">🔗 ${body}</span>
-      <span class="by">${esc(who)} が追加</span>
+      <span class="lk">${isFile ? "📎" : "🔗"} ${body}</span>
+      <span class="by">${esc(who)} が追加${isFile && l.size ? "・" + fmtSize(l.size) : ""}</span>
       ${(me.isAdmin || l.byUid === me.uid)
         ? `<button class="btn sm ghost" data-lkdel="${l.id}">削除</button>` : ""}
     </div>`;
   }).join("");
 
-  // リンクが1件も無いときは、区切り線を出さず追加ボタンだけにする
+  // 1件も無いときは、区切り線を出さず追加ボタンだけにする
   return `<div class="links${list.length ? "" : " bare"}">${rows}${canAdd
-    ? `<button class="btn sm ghost" data-lkadd="${t.id}">リンクを追加</button>` : ""}</div>`;
+    ? `<button class="btn sm ghost" data-lkadd="${t.id}">リンクを追加</button>`
+      + `<button class="btn sm ghost" data-fadd="${t.id}">ファイルを添付</button>` : ""}</div>`;
 }
 
 function openLinkBox(btn){
@@ -654,11 +672,105 @@ function openLinkBox(btn){
   u.focus();
 }
 
+/* ファイルの添付。置き場所は taskFiles/{taskId}/{自分のUID}/{名前} で、
+   パスに自分のUIDが入ることが「自分が置いたものだけ消せる」の根拠になる
+   （Storageのルール側で同じ判定をしている）。
+   ダウンロードURLは、URLを知っていればログインなしで開ける。名簿や会計資料など
+   部外に出て困るものは置かない運用が前提。 */
+function openFileBox(btn){
+  const taskId = btn.dataset.fadd;
+  if(btn.nextElementSibling && btn.nextElementSibling.classList.contains("reasonbox")) return;
+
+  const box = document.createElement("div");
+  box.className = "reasonbox";
+  box.innerHTML = `
+    <label>添付するファイル（1つ10MBまで）</label>
+    <input type="file">
+    <div class="mini fmsg"></div>
+    <div class="row">
+      <button class="btn sm red" disabled>この内容で添付する</button>
+      <button class="btn sm ghost">やめる</button>
+    </div>`;
+  btn.after(box);
+
+  const inp = box.querySelector("input");
+  const msg = box.querySelector(".fmsg");
+  const [send, cancel] = box.querySelectorAll("button");
+
+  inp.onchange = () => {
+    const f = inp.files && inp.files[0];
+    if(!f){ send.disabled = true; msg.textContent = ""; return; }
+    // 上限超えは送る前に止める。送ってから拒否されると、待たせたうえに理由が分かりにくい
+    if(f.size > MAX_FILE){
+      send.disabled = true;
+      msg.innerHTML = `<span style="color:var(--red)">${esc(f.name)} は ${fmtSize(f.size)} で、
+        上限の10MBを超えています。</span>`;
+      return;
+    }
+    send.disabled = false;
+    msg.textContent = `${f.name}（${fmtSize(f.size)}）`;
+  };
+  cancel.onclick = () => box.remove();
+
+  send.onclick = async () => {
+    const f = inp.files && inp.files[0];
+    if(!f) return;
+    send.disabled = true;
+    try{
+      const { m, st } = await storageApi();
+      const id = (self.crypto && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : String(Date.now()) + Math.random().toString(36).slice(2);
+      // 元の名前は label に残し、パスには安全な文字だけを使う
+      const safe = f.name.replace(/[^\w.\-]+/g, "_").slice(-80);
+      const path = `taskFiles/${taskId}/${me.uid}/${id}_${safe}`;
+      const ref = m.ref(st, path);
+
+      const up = m.uploadBytesResumable(ref, f, {
+        contentType: f.type || "application/octet-stream"
+      });
+      up.on("state_changed", (s) => {
+        const pct = s.totalBytes ? Math.round(s.bytesTransferred / s.totalBytes * 100) : 0;
+        msg.textContent = `送信中… ${pct}%`;
+      });
+      await up;
+
+      const url = await m.getDownloadURL(ref);
+      await addDoc(collection(db,"taskLinks"), {
+        taskId, kind: "file", url,
+        label: f.name, storagePath: path, size: f.size,
+        byUid: me.uid, byName: me.displayName, at: serverTimestamp()
+      });
+      await refreshLinks();
+    }catch(e){
+      console.error(e);
+      alert("添付できませんでした。担当者でないか、通信状況をご確認ください。");
+      send.disabled = false;
+    }
+  };
+}
+
 async function deleteLink(btn){
-  if(!confirm("このリンクを削除しますか？")) return;
+  const id = btn.dataset.lkdel;
+  const item = Object.values(cacheLinks).flat().find(x => x.id === id);
+  const isFile = item && item.storagePath;
+  if(!confirm(isFile ? "この添付ファイルを削除しますか？" : "このリンクを削除しますか？")) return;
   btn.disabled = true;
   try{
-    await deleteDoc(doc(db,"taskLinks", btn.dataset.lkdel));
+    // 先に本体を消す。記録だけ消すと、誰からも見えないファイルが容量を使い続ける。
+    if(isFile){
+      const { m, st } = await storageApi();
+      try{
+        await m.deleteObject(m.ref(st, item.storagePath));
+      }catch(e){
+        if(e && e.code === "storage/object-not-found"){
+          console.warn("本体は既に無い。記録だけ消す");   // 消し残しの掃除として続行
+        }else{
+          throw e;   // 権限や通信の失敗。記録を残したまま止め、押し直せるようにする
+        }
+      }
+    }
+    await deleteDoc(doc(db,"taskLinks", id));
     await refreshLinks();
   }catch(e){
     console.error(e); alert("削除できませんでした。"); btn.disabled = false;
@@ -673,6 +785,7 @@ async function refreshLinks(){
 
 function bindLinkButtons(){
   $$("[data-lkadd]").forEach(b => { b.onclick = () => openLinkBox(b); });
+  $$("[data-fadd]").forEach(b => { b.onclick = () => openFileBox(b); });
   $$("[data-lkdel]").forEach(b => { b.onclick = () => deleteLink(b); });
 }
 
@@ -1589,6 +1702,15 @@ async function removeTask(taskId, title, btn){
     // 先にリンクを消す。タスクを先に消すと、taskId で辿れないリンクが
     // 画面から見えないまま残ってしまう。
     const ls = await getDocs(query(collection(db,"taskLinks"), where("taskId","==",taskId)));
+    // 添付ファイルは本体も消す。記録だけ消すと、誰からも見えないファイルが残る。
+    const files = ls.docs.filter(d => d.data().storagePath);
+    if(files.length){
+      const { m, st } = await storageApi();
+      for(const d of files){
+        try{ await m.deleteObject(m.ref(st, d.data().storagePath)); }
+        catch(e){ console.warn("ファイル本体の削除:", e); }
+      }
+    }
     for(const d of ls.docs) await deleteDoc(d.ref);
     await deleteDoc(doc(db,"tasks",taskId));
     await loadTaskLinks();

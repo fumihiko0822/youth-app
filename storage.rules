@@ -1,0 +1,62 @@
+rules_version = '2';
+
+// 宮崎ひなた青年部 タスク・スケジュール管理アプリ ── Cloud Storage
+// 原則: 既定は全拒否。タスクに添える資料だけを置く。
+// 重要: 画面上でボタンを隠すことは防御ではない。防御はこのファイルだけが担う。
+//
+// v1 (2026-08-02)
+//   置き場所を taskFiles/{taskId}/{uid}/{ファイル名} にしている。
+//   パスに uid を含めるのは、「消してよいのは自分が置いたものだけ」を
+//   パスだけで判定できるようにするため。Firestore を引く回数を減らせる。
+//   （Storageのルールから引ける Firestore は1回の判定で2件まで。
+//     members〈管理者かどうか〉と tasks〈担当者かどうか〉でちょうど2件）
+//
+// 注意: ダウンロードURLは、URLを知っていればログインなしで開ける。
+//       名簿・会計資料など、部外に出て困るものは置かない運用とする。
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function memberDoc() {
+      return firestore.get(/databases/(default)/documents/members/$(request.auth.uid)).data;
+    }
+    function isActive() {
+      return request.auth != null
+        && firestore.exists(/databases/(default)/documents/members/$(request.auth.uid))
+        && memberDoc().status == 'active';
+    }
+    function isAdmin() {
+      return isActive() && memberDoc().isAdmin == true;
+    }
+    function isAssigneeOfTask(taskId) {
+      return request.auth != null
+        && firestore.exists(/databases/(default)/documents/tasks/$(taskId))
+        && request.auth.uid in
+           firestore.get(/databases/(default)/documents/tasks/$(taskId)).data.assigneeUids;
+    }
+
+    match /taskFiles/{taskId}/{uid}/{fileName} {
+
+      // 有効なメンバーは読める（タスクは部の共有ボードのため）
+      allow read: if isActive();
+
+      // 置けるのは、管理者か、そのタスクの担当者が自分の場所に置く場合だけ。
+      // 1ファイル10MBまで。create と update を分けて書いているのは、
+      // write と書くと削除も含まれ、削除時に request.resource が無く
+      // 判定が壊れるため。
+      allow create, update:
+        if request.resource != null
+        && request.resource.size < 10 * 1024 * 1024
+        && (isAdmin()
+            || (isActive() && request.auth.uid == uid && isAssigneeOfTask(taskId)));
+
+      // 消せるのは管理者と、自分が置いたものだけ
+      allow delete: if isAdmin() || (isActive() && request.auth.uid == uid);
+    }
+
+    // ---------- 上記以外は全て拒否 ----------
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
