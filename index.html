@@ -365,6 +365,9 @@
           <label>リンク（任意）</label>
           <div id="tkLinks"></div>
           <div><button class="btn sm ghost" id="btnLinkRow">リンクの欄を増やす</button></div>
+          <label>ファイル（任意・1つ10MBまで／複数選べます）</label>
+          <input id="tkFiles" type="file" multiple>
+          <div class="mini" id="tkFileMsg"></div>
           <label>承認</label>
           <label class="pick sole"><input type="checkbox" id="tkApproval"><span>承認を求める（本人は「完了報告」まで。完了にするのは管理者）</span></label>
           <div style="margin-top:16px;"><button class="btn" id="btnAddTask">追加する</button></div>
@@ -657,6 +660,7 @@ function openLinkBox(btn){
     try{
       await addDoc(collection(db,"taskLinks"), {
         taskId,
+        kind: "link",
         url: u.value.trim(),
         label: lb.value.trim() || null,
         byUid: me.uid,
@@ -1077,6 +1081,7 @@ function resetView(){
     .forEach(s => { $(s).innerHTML = ""; });
   hide($("#pushBox"));
   $("#tkAll").checked = false; $("#tkApproval").checked = false;
+  $("#tkFiles").value = ""; $("#tkFileMsg").textContent = "";
   resetLinkRows();
   hide($("#approvalBox"));
   hide($("#badgeTask")); hide($("#badgeSche")); hide($("#badgeAdmin"));
@@ -1611,11 +1616,50 @@ $("#btnAddTask").addEventListener("click", async () => {
     showErr($("#tskErr"), "リンクは https:// または http:// で始まるURLを入力してください。"); return;
   }
 
+  // ファイルも送信前に確かめる。送ってから拒否されると、待たせたうえに理由が分かりにくい
+  const files = [...($("#tkFiles").files || [])];
+  const tooBig = files.filter(f => f.size > MAX_FILE);
+  if(tooBig.length){
+    showErr($("#tskErr"),
+      `${tooBig.map(f => f.name + "（" + fmtSize(f.size) + "）").join("、")} は上限の10MBを超えています。`);
+    return;
+  }
+
   $("#btnAddTask").disabled = true;
+  const fmsg = $("#tkFileMsg");
+  const uploaded = [];        // 失敗したときに消せるよう、上げた分を控えておく
   try{
+    /* タスクのIDを先に決める。ファイルの置き場所にIDが要るため。
+       addDoc だと作成後にしかIDが分からず、作成→アップロードの順になる。
+       その間に通知が飛び、資料の無い状態でタスクが見えてしまう。
+       先にIDを取れば、資料が揃った状態で一度に現れる。 */
+    const taskRef = doc(collection(db,"tasks"));
+
+    if(files.length){
+      const { m, st } = await storageApi();
+      for(let i = 0; i < files.length; i++){
+        const f = files[i];
+        const id = (self.crypto && crypto.randomUUID)
+          ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(36).slice(2);
+        const safe = f.name.replace(/[^\w.\-]+/g, "_").slice(-80);
+        const path = `taskFiles/${taskRef.id}/${me.uid}/${id}_${safe}`;
+        const ref = m.ref(st, path);
+        const up = m.uploadBytesResumable(ref, f, {
+          contentType: f.type || "application/octet-stream"
+        });
+        up.on("state_changed", (sn) => {
+          const pct = sn.totalBytes ? Math.round(sn.bytesTransferred / sn.totalBytes * 100) : 0;
+          fmsg.textContent = `送信中… ${f.name}（${i + 1}/${files.length}）${pct}%`;
+        });
+        await up;
+        uploaded.push({ ref, path, url: await m.getDownloadURL(ref), name: f.name, size: f.size });
+      }
+      fmsg.textContent = "";
+    }
+
     // 担当者は1人でも配列で持つ。progress は全担当者分を「未着手」で初期化する。
     // 初期化を忘れると、その担当者は自分の進捗を一切変更できなくなる（ルールで拒否される）。
-    const taskRef = await addDoc(collection(db,"tasks"), {
+    await setDoc(taskRef, {
       title,
       assigneeUids: uids,
       progress: Object.fromEntries(uids.map(u => [u, "未着手"])),
@@ -1624,25 +1668,44 @@ $("#btnAddTask").addEventListener("click", async () => {
       dueDate: due || null, note: $("#tkNote").value.trim() || null,
       createdBy: me.uid, createdAt: serverTimestamp()
     });
-    // リンクは taskLinks に分けて持つ（担当者も後から追加できるようにするため）
+
+    // リンクと添付は taskLinks に分けて持つ（担当者も後から追加できるようにするため）
     for(const r of linkRows){
       await addDoc(collection(db,"taskLinks"), {
-        taskId: taskRef.id,
-        url: r.url,
-        label: r.label || null,
-        byUid: me.uid,
-        byName: me.displayName,
-        at: serverTimestamp()
+        taskId: taskRef.id, kind: "link",
+        url: r.url, label: r.label || null,
+        byUid: me.uid, byName: me.displayName, at: serverTimestamp()
+      });
+    }
+    for(const u of uploaded){
+      await addDoc(collection(db,"taskLinks"), {
+        taskId: taskRef.id, kind: "file", url: u.url,
+        label: u.name, storagePath: u.path, size: u.size,
+        byUid: me.uid, byName: me.displayName, at: serverTimestamp()
       });
     }
 
     $("#tkTitle").value = ""; $("#tkDue").value = ""; $("#tkNote").value = "";
     $("#tkApproval").checked = false; $("#tkAll").checked = false;
     $$("#tkWho .who").forEach(c => { c.checked = false; });
+    $("#tkFiles").value = ""; fmsg.textContent = "";
     resetLinkRows();
     await loadTaskLinks();
     await renderAdminTasks(); await renderTasks(); await renderAllTasks();
-  }catch(e){ console.error(e); showErr($("#tskErr"), "追加できませんでした。"); }
+  }catch(e){
+    console.error(e);
+    /* 途中で失敗したら、上げたファイルは消す。
+       どこで失敗しても、そのファイルはどの記録からも参照されていない状態になる。
+       残すと、誰からも見えないまま容量だけ使い続けることになる。 */
+    if(uploaded.length){
+      try{
+        const { m } = await storageApi();
+        for(const u of uploaded) await m.deleteObject(u.ref);
+      }catch(e2){ console.warn("巻き戻し:", e2); }
+    }
+    fmsg.textContent = "";
+    showErr($("#tskErr"), "追加できませんでした。");
+  }
   finally{ $("#btnAddTask").disabled = false; }
 });
 
