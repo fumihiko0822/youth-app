@@ -476,6 +476,18 @@ let cacheMembers = [];  // 表示名の解決に使う（全員が読み込む�
 let cacheLinks = {};    // taskId => リンクの配列
 let myReads = new Set();
 
+/* ===== 計測 =====
+   起動とログインの各区間の所要時間を開発者コンソールに出す。
+   「どこで待たされているか」を推測で切り分けようとして往復した経緯があるため、
+   数字が残る形にしておく。画面の表示には影響しない。 */
+const T0 = performance.now();
+let lastMark = 0;
+function mark(label){
+  const t = Math.round(performance.now() - T0);
+  console.log(`[計測] ${label}: ${t}ms（前の区間から ${t - lastMark}ms）`);
+  lastMark = t;
+}
+
 /* ===== 小道具 ===== */
 const $  = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
@@ -817,7 +829,12 @@ async function doLogin(){
   const id  = $("#fId").value.trim();
   const pin = $("#fPin").value;
   if(!id || !pin){ showErr($("#loginErr"), "IDと暗証番号を入力してください。"); return; }
-  $("#btnLogin").disabled = true;
+
+  // 押されたことが分かるようにする。disabled にするだけでは変化が小さい
+  const btn = $("#btnLogin");
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = "ログイン中…";
+  mark("ログインを押した");
   try{
     await signInWithEmailAndPassword(auth, idToMail(id), pin);
   }catch(e){
@@ -829,7 +846,7 @@ async function doLogin(){
           ? "試行回数が多すぎます。しばらく待ってからお試しください。"
           : "ログインできませんでした。通信状況をご確認ください。");
   }finally{
-    $("#btnLogin").disabled = false;
+    btn.disabled = false; btn.textContent = label;
   }
 }
 
@@ -846,16 +863,35 @@ $("#btnLogout").addEventListener("click", async () => {
 $("#btnConsentNo").addEventListener("click", () => signOut(auth));
 
 onAuthStateChanged(auth, async (user) => {
-  hide($("#bootView"));
   if(!user){
     me = null;
-    hide($("#appView")); hide($("#consentView")); show($("#loginView"));
+    hide($("#bootView")); hide($("#appView")); hide($("#consentView")); show($("#loginView"));
     $("#fId").value = ""; $("#fPin").value = "";   // 共用端末で前の人のIDを残さない
     return;
   }
-  hide($("#loginView"));
+
+  /* ログイン画面を隠したあと何も出さないと、取得が終わるまで画面が真っ白になる。
+     以前はここで2往復ぶん待たされ、止まって見えていた。 */
+  hide($("#loginView")); hide($("#appView")); hide($("#consentView"));
+  show($("#bootView"));
+  mark("認証完了");
+
   try{
-    const snap = await getDoc(doc(db, "members", user.uid));
+    /* uid だけで始められるものは全部まとめて投げる。
+       members を待ってから consents、その後にタスク…と順に待つと4往復になる。
+       判定の順序（登録 → 状態 → 同意）は変えず、取得だけ先に走らせる。 */
+    const pMember  = getDoc(doc(db,"members",user.uid));
+    const pConsent = getDocs(query(collection(db,"consents"), where("uid","==",user.uid)));
+    /* 停止中・未登録のアカウントではルールに拒否される。
+       その場合は下の判定で弾かれるので、ここでは失敗を捨てて先へ進める。 */
+    const pTasks = getDocs(query(collection(db,"tasks"),
+      where("assigneeUids","array-contains",user.uid))).catch(() => null);
+    const pReads = getDocs(query(collection(db,"reads"),
+      where("uid","==",user.uid))).catch(() => null);
+
+    const [snap, cs] = await Promise.all([pMember, pConsent]);
+    mark("情報取得完了");
+
     if(!snap.exists()){
       await signOut(auth);
       showErr($("#loginErr"), "このアカウントは登録が完了していません。管理者にご確認ください。");
@@ -869,11 +905,11 @@ onAuthStateChanged(auth, async (user) => {
     }
     me = { uid:user.uid, displayName:m.displayName || "（名前未設定）", isAdmin: m.isAdmin === true, status:m.status };
 
-    // 同意チェック
-    const cs = await getDocs(query(collection(db,"consents"), where("uid","==",me.uid)));
-    if(cs.empty){ show($("#consentView")); return; }
+    // 同意が無ければアプリには入れない（FR-9）
+    if(cs.empty){ hide($("#bootView")); show($("#consentView")); return; }
     hide($("#consentView"));
-    await startApp();
+
+    await startApp({ tasks: await pTasks, reads: await pReads });
   }catch(e){
     console.error(e);
     await signOut(auth);
@@ -1087,11 +1123,12 @@ function resetView(){
   hide($("#badgeTask")); hide($("#badgeSche")); hide($("#badgeAdmin"));
 }
 
-async function startApp(){
+async function startApp(pre){
   resetView();
   $("#meName").textContent = me.displayName;
   $("#meRole").textContent = me.isAdmin ? "管理者" : "";
   me.isAdmin ? show($("#tabAdmin")) : hide($("#tabAdmin"));
+  hide($("#bootView"));
   show($("#appView"));
 
   // 読み込み中と分かるようにする。空のままだと「タスクが無い」と誤解される。
@@ -1103,12 +1140,14 @@ async function startApp(){
      必要なのは「自分のタスク」と「自分の確認記録」の2つだけで、
      メンバー一覧・リンク・全タスク・予定は無くても描ける。
      以前はそれらを全部待ってから描いていたため、待ち時間が積み上がっていた。 */
-  const pTasks = fetchMyTasks();
-  const pReads = loadMyReads();
+  // ログイン時に先回りで取得したものがあれば使う。無ければここで取りに行く
+  const pTasks = fetchMyTasks(pre && pre.tasks);
+  const pReads = loadMyReads(pre && pre.reads);
   const pRest  = Promise.all([ loadMembers(), loadTaskLinks() ]);
 
   const [tasks] = await Promise.all([ pTasks, pReads ]);
   await renderTasks(tasks);          // ← ここで最初の表示
+  mark("マイタスク表示");
 
   // ここから先は後回しでよいもの。リンクが入るのでマイタスクは描き直す。
   await pRest;
@@ -1119,6 +1158,7 @@ async function startApp(){
   if(me.isAdmin) await renderAdminTasks(all);
   await renderPushBox();
   listenForeground();
+  mark("残りの描画完了");
 }
 
 /* iOSはアプリを閉じている間ページを止める。通知から開き直したときに
@@ -1136,9 +1176,9 @@ document.addEventListener("visibilitychange", async () => {
   finally{ refreshing = false; }
 });
 
-async function loadMyReads(){
+async function loadMyReads(pre){
   myReads = new Set();
-  const s = await getDocs(query(collection(db,"reads"), where("uid","==",me.uid)));
+  const s = pre || await getDocs(query(collection(db,"reads"), where("uid","==",me.uid)));
   s.forEach(d => myReads.add(`${d.data().itemType}__${d.data().itemId}`));
 }
 
@@ -1163,8 +1203,8 @@ $$(".subtabs button").forEach(b => b.addEventListener("click", () => {
 }));
 
 /* ===== タスク（本人分） ===== */
-async function fetchMyTasks(){
-  const s = await getDocs(query(collection(db,"tasks"), where("assigneeUids","array-contains",me.uid)));
+async function fetchMyTasks(pre){
+  const s = pre || await getDocs(query(collection(db,"tasks"), where("assigneeUids","array-contains",me.uid)));
   const arr = [];
   s.forEach(d => arr.push({ id:d.id, ...d.data() }));
   arr.sort((a,b) => (a.dueDate||"9999").localeCompare(b.dueDate||"9999"));
