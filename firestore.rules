@@ -36,6 +36,13 @@ rules_version = '2';
 //   単数だと、後から別の端末で許可したときに前の端末へ届かなくなる。
 //   しかも何のエラーも出ないため、気づけない。本人が自分のドキュメントの
 //   fcmTokens だけを書き換えられる点は単数のときと変わらない。
+//
+// v11 (2026-08-02)
+//   posts（掲示板）を追加した。投稿は管理者のみ、閲覧は有効なメンバー全員。
+//   確認記録は reads をそのまま使う（itemType に "post" を入れるだけ）。
+//   taskLinks を attachments に一般化し、ownerType（task / post）と
+//   ownerId で持つようにした。掲示板にも、将来のチャットにも同じ規則で
+//   対応できる。コレクションを増やすほど書き漏らしの危険が増えるため。
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -184,17 +191,34 @@ service cloud.firestore {
     }
 
 
-    // ---------- taskLinks : タスクに添えるリンク ----------
+    // ---------- posts : 掲示板 ----------
+    // タスクや予定に紐づかない連絡（規約の改定、県からの通知、資料の配布など）。
+    // 投稿できるのは管理者だけ。閲覧は有効なメンバー全員（共有ボードと同じ）。
+    // 誰が読んだかは reads に itemType:"post" で記録する（既存の仕組みのまま）。
+    match /posts/{postId} {
+      allow read:   if isActive() || isAdmin();
+      allow create: if isAdmin();
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+
+    // ---------- attachments : リンクと添付ファイル ----------
+    // タスクにも掲示板にも同じ規則で付けられるよう、ownerType と ownerId で持つ。
+    // コレクションを分けると同じ規則を書き写すことになり、書き漏らしの危険が増える。
+    //
     // 管理者 … 追加・編集・削除のすべて。
-    // 担当者 … 「自分名義での追加」と「自分が追加したものの削除」だけ。
-    //          既存のリンクは変更できない（update が管理者のみのため）。
-    //          管理者が付けたリンクは byUid が一致しないので消せない。
-    match /taskLinks/{linkId} {
+    // それ以外 … 「そのタスクの担当者が自分名義で追加する」場合だけ。
+    //            掲示板には追加できない（ownerType が "task" のときに限るため）。
+    //            既存のものは変更できない（update が管理者のみ）。
+    //            管理者が付けたものは byUid が一致しないので消せない。
+    match /attachments/{attachId} {
       allow read:   if isActive() || isAdmin();
       allow create: if isAdmin()
                     || (isActive()
                         && isSelf(request.resource.data.byUid)
-                        && isAssigneeOfTask(request.resource.data.taskId));
+                        && request.resource.data.ownerType == 'task'
+                        && isAssigneeOfTask(request.resource.data.ownerId));
       allow update: if isAdmin();
       allow delete: if isAdmin()
                     || (isActive() && isSelf(resource.data.byUid));

@@ -4,8 +4,13 @@ rules_version = '2';
 // 原則: 既定は全拒否。タスクに添える資料だけを置く。
 // 重要: 画面上でボタンを隠すことは防御ではない。防御はこのファイルだけが担う。
 //
+// v2 (2026-08-02)
+//   置き場所を files/{ownerType}/{ownerId}/{uid}/{ファイル名} に一般化した。
+//   タスク（task）と掲示板（post）で同じ規則を使う。掲示板に置けるのは
+//   管理者だけで、担当者の例外は ownerType が "task" のときにしか効かない。
+//
 // v1 (2026-08-02)
-//   置き場所を taskFiles/{taskId}/{uid}/{ファイル名} にしている。
+//   置き場所を taskFiles/{taskId}/{uid}/{ファイル名} にしていた。
 //   パスに uid を含めるのは、「消してよいのは自分が置いたものだけ」を
 //   パスだけで判定できるようにするため。Firestore を引く回数を減らせる。
 //   （Storageのルールから引ける Firestore は1回の判定で2件まで。
@@ -35,12 +40,13 @@ service firebase.storage {
            firestore.get(/databases/(default)/documents/tasks/$(taskId)).data.assigneeUids;
     }
 
-    match /taskFiles/{taskId}/{uid}/{fileName} {
+    match /files/{ownerType}/{ownerId}/{uid}/{fileName} {
 
-      // 有効なメンバーは読める（タスクは部の共有ボードのため）
+      // 有効なメンバーは読める（タスクも掲示板も部の共有物のため）
       allow read: if isActive();
 
       // 置けるのは、管理者か、そのタスクの担当者が自分の場所に置く場合だけ。
+      // 掲示板（ownerType == "post"）に置けるのは管理者だけになる。
       // 1ファイル10MBまで。create と update を分けて書いているのは、
       // write と書くと削除も含まれ、削除時に request.resource が無く
       // 判定が壊れるため。
@@ -48,7 +54,10 @@ service firebase.storage {
         if request.resource != null
         && request.resource.size < 10 * 1024 * 1024
         && (isAdmin()
-            || (isActive() && request.auth.uid == uid && isAssigneeOfTask(taskId)));
+            || (isActive()
+                && request.auth.uid == uid
+                && ownerType == 'task'
+                && isAssigneeOfTask(ownerId)));
 
       // 消せるのは管理者と、自分が置いたものだけ
       allow delete: if isAdmin() || (isActive() && request.auth.uid == uid);

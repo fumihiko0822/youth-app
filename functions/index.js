@@ -231,7 +231,7 @@ exports.deleteMember = onCall({ region: REGION }, async (request) => {
     consentSnap.docs.forEach((d) => writes.push({ op: "delete", ref: d.ref }));
 
     // この人が追加したリンク・添付ファイルも消す（確認記録・同意記録と同じ扱い）
-    const linkSnap = await db.collection("taskLinks").where("byUid", "==", targetUid).get();
+    const linkSnap = await db.collection("attachments").where("byUid", "==", targetUid).get();
     linkSnap.docs.forEach((d) => writes.push({ op: "delete", ref: d.ref }));
 
     // 添付ファイルは Storage の実体も消す。Firestore の記録だけ消すと、
@@ -469,5 +469,20 @@ exports.onTaskReworked = onDocumentUpdated(
     if (!to.length) return;   // 進捗の更新は頻繁に起きるので、差戻以外は何も出さない
     logger.info(`onTaskReworked 起動 title=${after.title} 宛先${to.length}人`);
     await pushTo(to, "タスクが差し戻されました", after.title || "");
+  }
+);
+
+/* 新しいお知らせ → 有効なメンバー全員へ（投稿した本人には送らない）。
+   予定の通知と同じ形。Firestoreトリガーなので、Callable と違って
+   Cloud Run の「パブリック アクセスを許可」は要らない（制約Q）。 */
+exports.onPostCreated = onDocumentCreated(
+  { region: REGION, document: "posts/{postId}" },
+  async (event) => {
+    const post = event.data && event.data.data();
+    if (!post) return;
+    const snap = await db.collection("members").where("status", "==", "active").get();
+    const to = snap.docs.map((d) => d.id).filter((u) => u !== post.createdBy);
+    logger.info(`onPostCreated 起動 title=${post.title} 宛先${to.length}人`);
+    await pushTo(to, "新しいお知らせ", post.title || "");
   }
 );

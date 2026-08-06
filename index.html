@@ -140,6 +140,9 @@
   .pushbar.ok{border-left-color:var(--ok);}
 
   /* タスクに添えるリンク */
+  .note.body{white-space:pre-wrap;}
+  #psBody{min-height:110px;resize:vertical;}
+
   .links{margin-top:9px;padding-top:8px;border-top:1px dashed var(--line);}
   .links.bare{border-top:none;padding-top:0;margin-top:8px;}
   .linkrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:5px 0;font-size:13px;}
@@ -292,8 +295,9 @@
   </header>
 
   <nav class="tabs">
-    <button data-tab="task" class="on">マイタスク<span id="badgeTask" class="dot hidden">0</span></button>
+    <button data-tab="task" class="on">タスク<span id="badgeTask" class="dot hidden">0</span></button>
     <button data-tab="all">みんな</button>
+    <button data-tab="post">掲示板<span id="badgePost" class="dot hidden">0</span></button>
     <button data-tab="sche">予定<span id="badgeSche" class="dot hidden">0</span></button>
     <button data-tab="admin" id="tabAdmin" class="hidden">管理<span id="badgeAdmin" class="dot hidden">0</span></button>
   </nav>
@@ -310,6 +314,11 @@
       <div id="allList" class="cards"></div>
     </section>
 
+    <!-- 掲示板 -->
+    <section id="panePost" class="hidden">
+      <div id="postList" class="cards"></div>
+    </section>
+
     <!-- 予定 -->
     <section id="paneSche" class="hidden">
       <div id="scheList" class="cards"></div>
@@ -321,6 +330,7 @@
         <button data-sub="mem" class="on">メンバー</button>
         <button data-sub="tsk">タスク</button>
         <button data-sub="sch">予定</button>
+        <button data-sub="pst">掲示板</button>
         <button data-sub="rd">確認状況</button>
       </div>
 
@@ -392,6 +402,28 @@
         </div>
         <h2 class="sec">予定一覧</h2>
         <div id="admScheList"></div>
+      </div>
+
+      <!-- 掲示板管理 -->
+      <div id="subPst" class="hidden">
+        <div class="panel">
+          <h3>お知らせを投稿</h3>
+          <p>タスクや予定に紐づかない連絡を全員に共有します。投稿すると全員に通知が届きます。</p>
+          <label>題名</label>
+          <input id="psTitle" type="text" placeholder="例）会則改定のお知らせ">
+          <label>本文</label>
+          <textarea id="psBody" placeholder="内容を入力してください"></textarea>
+          <label>リンク（任意）</label>
+          <div id="psLinks"></div>
+          <div><button class="btn sm ghost" id="btnPsLinkRow">リンクの欄を増やす</button></div>
+          <label>ファイル（任意・1つ10MBまで／複数選べます）</label>
+          <input id="psFiles" type="file" multiple>
+          <div class="mini" id="psFileMsg"></div>
+          <div style="margin-top:16px;"><button class="btn" id="btnAddPost">投稿する</button></div>
+          <div id="pstErr" class="err hidden"></div>
+        </div>
+        <h2 class="sec">お知らせ一覧</h2>
+        <div id="admPostList" class="cards"></div>
       </div>
 
       <!-- 確認状況 -->
@@ -473,7 +505,7 @@ const swReady = ("serviceWorker" in navigator)
 /* ===== 状態 ===== */
 let me = null;          // { uid, displayName, isAdmin, status }
 let cacheMembers = [];  // 表示名の解決に使う（全員が読み込む）
-let cacheLinks = {};    // taskId => リンクの配列
+let cacheAttach = {};   // "種類:ID" => 添付（リンク・ファイル）の配列
 let myReads = new Set();
 
 /* ===== 計測 =====
@@ -566,16 +598,18 @@ function progressButton(t){
 const fold = (label, n, html) =>
   `<details class="fold"><summary>${label}（${n}件）</summary><div class="cards">${html}</div></details>`;
 
-// 確認（既読）ボタン。自分が担当のタスクにだけ出す。
-function readButton(t){
-  return myReads.has(`task__${t.id}`)
+// 確認（既読）ボタン。タスク・予定・お知らせで共通に使う。
+function readButton(itemType, itemId){
+  const k = `${itemType}__${itemId}`;
+  return myReads.has(k)
     ? `<span class="chk">確認済み</span>`
-    : `<button class="btn sm red" data-read="task__${t.id}">確認しました</button>`;
+    : `<button class="btn sm red" data-read="${k}">確認しました</button>`;
 }
 
-/* ===== タスクに添えるリンク（FR-28） =====
-   タスク本体の配列ではなく taskLinks コレクションで持つ。ルールに繰り返し処理が
-   なく、配列では「消してよいのは自分が追加した分だけ」を表現できないため。 */
+/* ===== 添付（リンクとファイル／FR-28・FR-29） =====
+   タスク本体の配列ではなく attachments コレクションで持つ。ルールに繰り返し処理が
+   なく、配列では「消してよいのは自分が追加した分だけ」を表現できないため。
+   ownerType（task / post）と ownerId で持つので、掲示板でも同じ仕組みが使える。 */
 
 // http(s) 以外は受け付けない。javascript: などをリンクにすると、
 // 押しただけでスクリプトが動いてしまう。
@@ -603,23 +637,25 @@ function linkLabel(url, label){
   }catch(e){ return url; }
 }
 
-async function loadTaskLinks(){
-  const s = await getDocs(collection(db,"taskLinks"));
-  cacheLinks = {};
+const attachKey = (ownerType, ownerId) => `${ownerType}:${ownerId}`;
+
+async function loadAttachments(){
+  const s = await getDocs(collection(db,"attachments"));
+  cacheAttach = {};
   s.forEach(d => {
     const v = { id:d.id, ...d.data() };
-    (cacheLinks[v.taskId] = cacheLinks[v.taskId] || []).push(v);
+    const k = attachKey(v.ownerType, v.ownerId);
+    (cacheAttach[k] = cacheAttach[k] || []).push(v);
   });
   // 追加した順に並べる（サーバ時刻が未確定のものは末尾）
-  Object.values(cacheLinks).forEach(a =>
+  Object.values(cacheAttach).forEach(a =>
     a.sort((x,y) => ((x.at && x.at.seconds) || 1e18) - ((y.at && y.at.seconds) || 1e18)));
 }
 
 // リンクの一覧。削除ボタンは管理者と、自分が追加した分にだけ出す。
 // ルール側でも同じ判定をしているので、ここでの出し分けは操作性のためのもの。
-function linksBlock(t){
-  const list = cacheLinks[t.id] || [];
-  const canAdd = me.isAdmin || (t.assigneeUids || []).includes(me.uid);
+function attachBlock(ownerType, ownerId, canAdd){
+  const list = cacheAttach[attachKey(ownerType, ownerId)] || [];
   if(!list.length && !canAdd) return "";
 
   const rows = list.map(l => {
@@ -641,12 +677,12 @@ function linksBlock(t){
 
   // 1件も無いときは、区切り線を出さず追加ボタンだけにする
   return `<div class="links${list.length ? "" : " bare"}">${rows}${canAdd
-    ? `<button class="btn sm ghost" data-lkadd="${t.id}">リンクを追加</button>`
-      + `<button class="btn sm ghost" data-fadd="${t.id}">ファイルを添付</button>` : ""}</div>`;
+    ? `<button class="btn sm ghost" data-lkadd="${ownerType}:${ownerId}">リンクを追加</button>`
+      + `<button class="btn sm ghost" data-fadd="${ownerType}:${ownerId}">ファイルを添付</button>` : ""}</div>`;
 }
 
 function openLinkBox(btn){
-  const taskId = btn.dataset.lkadd;
+  const [ownerType, ownerId] = btn.dataset.lkadd.split(":");
   if(btn.nextElementSibling && btn.nextElementSibling.classList.contains("reasonbox")) return;
 
   const box = document.createElement("div");
@@ -670,8 +706,8 @@ function openLinkBox(btn){
   send.onclick   = async () => {
     send.disabled = true;
     try{
-      await addDoc(collection(db,"taskLinks"), {
-        taskId,
+      await addDoc(collection(db,"attachments"), {
+        ownerType, ownerId,
         kind: "link",
         url: u.value.trim(),
         label: lb.value.trim() || null,
@@ -688,13 +724,13 @@ function openLinkBox(btn){
   u.focus();
 }
 
-/* ファイルの添付。置き場所は taskFiles/{taskId}/{自分のUID}/{名前} で、
+/* ファイルの添付。置き場所は files/{種類}/{ID}/{自分のUID}/{名前} で、
    パスに自分のUIDが入ることが「自分が置いたものだけ消せる」の根拠になる
    （Storageのルール側で同じ判定をしている）。
    ダウンロードURLは、URLを知っていればログインなしで開ける。名簿や会計資料など
    部外に出て困るものは置かない運用が前提。 */
 function openFileBox(btn){
-  const taskId = btn.dataset.fadd;
+  const [ownerType, ownerId] = btn.dataset.fadd.split(":");
   if(btn.nextElementSibling && btn.nextElementSibling.classList.contains("reasonbox")) return;
 
   const box = document.createElement("div");
@@ -733,28 +769,10 @@ function openFileBox(btn){
     if(!f) return;
     send.disabled = true;
     try{
-      const { m, st } = await storageApi();
-      const id = (self.crypto && crypto.randomUUID)
-        ? crypto.randomUUID()
-        : String(Date.now()) + Math.random().toString(36).slice(2);
-      // 元の名前は label に残し、パスには安全な文字だけを使う
-      const safe = f.name.replace(/[^\w.\-]+/g, "_").slice(-80);
-      const path = `taskFiles/${taskId}/${me.uid}/${id}_${safe}`;
-      const ref = m.ref(st, path);
-
-      const up = m.uploadBytesResumable(ref, f, {
-        contentType: f.type || "application/octet-stream"
-      });
-      up.on("state_changed", (s) => {
-        const pct = s.totalBytes ? Math.round(s.bytesTransferred / s.totalBytes * 100) : 0;
-        msg.textContent = `送信中… ${pct}%`;
-      });
-      await up;
-
-      const url = await m.getDownloadURL(ref);
-      await addDoc(collection(db,"taskLinks"), {
-        taskId, kind: "file", url,
-        label: f.name, storagePath: path, size: f.size,
+      const [u] = await uploadFiles(ownerType, ownerId, [f], (t) => { msg.textContent = t; });
+      await addDoc(collection(db,"attachments"), {
+        ownerType, ownerId, kind: "file", url: u.url,
+        label: u.name, storagePath: u.path, size: u.size,
         byUid: me.uid, byName: me.displayName, at: serverTimestamp()
       });
       await refreshLinks();
@@ -768,7 +786,7 @@ function openFileBox(btn){
 
 async function deleteLink(btn){
   const id = btn.dataset.lkdel;
-  const item = Object.values(cacheLinks).flat().find(x => x.id === id);
+  const item = Object.values(cacheAttach).flat().find(x => x.id === id);
   const isFile = item && item.storagePath;
   if(!confirm(isFile ? "この添付ファイルを削除しますか？" : "このリンクを削除しますか？")) return;
   btn.disabled = true;
@@ -786,7 +804,7 @@ async function deleteLink(btn){
         }
       }
     }
-    await deleteDoc(doc(db,"taskLinks", id));
+    await deleteDoc(doc(db,"attachments", id));
     await refreshLinks();
   }catch(e){
     console.error(e); alert("削除できませんでした。"); btn.disabled = false;
@@ -794,7 +812,7 @@ async function deleteLink(btn){
 }
 
 async function refreshLinks(){
-  await loadTaskLinks();
+  await loadAttachments();
   await renderTasks(); await renderAllTasks();
   if(me.isAdmin) await renderAdminTasks();
 }
@@ -806,17 +824,54 @@ function bindLinkButtons(){
 }
 
 // 作成フォームのリンク入力欄を1行足す
-function addLinkRow(){
+function addLinkRow(sel){
   const d = document.createElement("div");
   d.className = "linkinput";
   d.innerHTML = `
     <input type="url" class="u" autocapitalize="none" spellcheck="false"
            placeholder="https://docs.google.com/spreadsheets/...">
     <input type="text" class="l" placeholder="表示名（任意）">`;
-  $("#tkLinks").appendChild(d);
+  $(sel).appendChild(d);
 }
-function resetLinkRows(){ $("#tkLinks").innerHTML = ""; addLinkRow(); }
-$("#btnLinkRow").addEventListener("click", addLinkRow);
+function resetLinkRows(sel){ $(sel).innerHTML = ""; addLinkRow(sel); }
+$("#btnLinkRow").addEventListener("click", () => addLinkRow("#tkLinks"));
+$("#btnPsLinkRow").addEventListener("click", () => addLinkRow("#psLinks"));
+
+/* 入力欄からリンクを読み取る。空欄は無視するが、書かれていて形式が違うものは
+   黙って捨てずに知らせる（制約N「黙って切り捨てない」）。 */
+function readLinkRows(sel){
+  const rows = [...$$(`${sel} .linkinput`)].map(r => ({
+    url:   r.querySelector(".u").value.trim(),
+    label: r.querySelector(".l").value.trim()
+  })).filter(r => r.url !== "");
+  return { rows, bad: rows.some(r => !isSafeUrl(r.url)) };
+}
+
+/* 選ばれたファイルを Storage に上げ、記録に必要な情報を返す。
+   タスク作成・投稿・後からの添付で共通に使う。 */
+async function uploadFiles(ownerType, ownerId, files, onProgress){
+  const { m, st } = await storageApi();
+  const out = [];
+  for(let i = 0; i < files.length; i++){
+    const f = files[i];
+    const id = (self.crypto && crypto.randomUUID)
+      ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(36).slice(2);
+    // 元の名前は label に残し、パスには安全な文字だけを使う
+    const safe = f.name.replace(/[^\w.\-]+/g, "_").slice(-80);
+    const path = `files/${ownerType}/${ownerId}/${me.uid}/${id}_${safe}`;
+    const ref = m.ref(st, path);
+    const up = m.uploadBytesResumable(ref, f, {
+      contentType: f.type || "application/octet-stream"
+    });
+    up.on("state_changed", (sn) => {
+      const pct = sn.totalBytes ? Math.round(sn.bytesTransferred / sn.totalBytes * 100) : 0;
+      if(onProgress) onProgress(`送信中… ${f.name}（${i + 1}/${files.length}）${pct}%`);
+    });
+    await up;
+    out.push({ ref, path, url: await m.getDownloadURL(ref), name: f.name, size: f.size });
+  }
+  return out;
+}
 
 const readKey = (type, id) => `${type}__${id}__${me.uid}`;
 
@@ -1041,7 +1096,7 @@ async function listenForeground(){
     const { isSupported, getMessaging, onMessage } = await msgMod();
     if(!(await isSupported())) return;
     onMessage(getMessaging(app), async () => {
-      await loadMyReads(); await loadTaskLinks();
+      await loadMyReads(); await loadAttachments();
       await renderTasks(); await renderAllTasks(); await renderSchedules();
       if(me && me.isAdmin) await renderAdminTasks();
     });
@@ -1104,23 +1159,28 @@ async function releaseToken(){
 function resetView(){
   // タブは必ず「マイタスク」から始める
   $$("nav.tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === "task"));
-  show($("#paneTask")); hide($("#paneAll")); hide($("#paneSche")); hide($("#paneAdmin"));
+  show($("#paneTask")); hide($("#paneAll")); hide($("#panePost"));
+  hide($("#paneSche")); hide($("#paneAdmin"));
 
   // 管理のサブタブも「メンバー」に戻す
   $$(".subtabs button").forEach(b => b.classList.toggle("on", b.dataset.sub === "mem"));
-  show($("#subMem")); hide($("#subTsk")); hide($("#subSch")); hide($("#subRd"));
+  show($("#subMem")); hide($("#subTsk")); hide($("#subSch"));
+  hide($("#subPst")); hide($("#subRd"));
 
   // 前のセッションで描画した中身を残さない
   cacheMembers = [];
-  cacheLinks = {};
-  ["#taskList","#allList","#scheList","#memList","#admTaskList","#admScheList","#readList","#tkWho","#approvalBox","#pushBox"]
+  cacheAttach = {};
+  ["#taskList","#allList","#postList","#scheList","#memList","#admTaskList","#admScheList",
+   "#admPostList","#readList","#tkWho","#approvalBox","#pushBox"]
     .forEach(s => { $(s).innerHTML = ""; });
   hide($("#pushBox"));
   $("#tkAll").checked = false; $("#tkApproval").checked = false;
   $("#tkFiles").value = ""; $("#tkFileMsg").textContent = "";
-  resetLinkRows();
+  $("#psTitle").value = ""; $("#psBody").value = "";
+  $("#psFiles").value = ""; $("#psFileMsg").textContent = "";
+  resetLinkRows("#tkLinks"); resetLinkRows("#psLinks");
   hide($("#approvalBox"));
-  hide($("#badgeTask")); hide($("#badgeSche")); hide($("#badgeAdmin"));
+  hide($("#badgeTask")); hide($("#badgePost")); hide($("#badgeSche")); hide($("#badgeAdmin"));
 }
 
 async function startApp(pre){
@@ -1143,7 +1203,7 @@ async function startApp(pre){
   // ログイン時に先回りで取得したものがあれば使う。無ければここで取りに行く
   const pTasks = fetchMyTasks(pre && pre.tasks);
   const pReads = loadMyReads(pre && pre.reads);
-  const pRest  = Promise.all([ loadMembers(), loadTaskLinks() ]);
+  const pRest  = Promise.all([ loadMembers(), loadAttachments() ]);
 
   const [tasks] = await Promise.all([ pTasks, pReads ]);
   await renderTasks(tasks);          // ← ここで最初の表示
@@ -1153,7 +1213,7 @@ async function startApp(pre){
   await pRest;
   await renderTasks(tasks);
   const all = await fetchAllTasks();          // 全タスクの取得は1回だけ
-  await Promise.all([ renderAllTasks(all), renderSchedules() ]);
+  await Promise.all([ renderAllTasks(all), renderSchedules(), renderPosts() ]);
   // 管理者は、管理タブを開く前に承認待ちの件数バッジを出しておく
   if(me.isAdmin) await renderAdminTasks(all);
   await renderPushBox();
@@ -1168,8 +1228,8 @@ document.addEventListener("visibilitychange", async () => {
   if(document.visibilityState !== "visible" || !me || refreshing) return;
   refreshing = true;
   try{
-    await Promise.all([ loadMyReads(), loadTaskLinks() ]);
-    await Promise.all([ renderTasks(), renderAllTasks(), renderSchedules() ]);
+    await Promise.all([ loadMyReads(), loadAttachments() ]);
+    await Promise.all([ renderTasks(), renderAllTasks(), renderSchedules(), renderPosts() ]);
     if(me.isAdmin) await renderAdminTasks();
     await renderPushBox();
   }catch(e){ console.warn("再読み込み:", e); }
@@ -1187,9 +1247,11 @@ $$("nav.tabs button").forEach(b => b.addEventListener("click", () => {
   $$("nav.tabs button").forEach(x => x.classList.remove("on"));
   b.classList.add("on");
   const t = b.dataset.tab;
-  hide($("#paneTask")); hide($("#paneAll")); hide($("#paneSche")); hide($("#paneAdmin"));
+  hide($("#paneTask")); hide($("#paneAll")); hide($("#panePost"));
+  hide($("#paneSche")); hide($("#paneAdmin"));
   if(t === "task"){ show($("#paneTask")); renderTasks(); }
   if(t === "all"){ show($("#paneAll")); renderAllTasks(); }
+  if(t === "post"){ show($("#panePost")); renderPosts(); }
   if(t === "sche") show($("#paneSche"));
   if(t === "admin"){ show($("#paneAdmin")); loadAdmin(); }
 }));
@@ -1197,9 +1259,10 @@ $$("nav.tabs button").forEach(b => b.addEventListener("click", () => {
 $$(".subtabs button").forEach(b => b.addEventListener("click", () => {
   $$(".subtabs button").forEach(x => x.classList.remove("on"));
   b.classList.add("on");
-  ["mem","tsk","sch","rd"].forEach(k => hide($("#sub" + k[0].toUpperCase() + k.slice(1))));
+  ["mem","tsk","sch","pst","rd"].forEach(k => hide($("#sub" + k[0].toUpperCase() + k.slice(1))));
   show($("#sub" + b.dataset.sub[0].toUpperCase() + b.dataset.sub.slice(1)));
   if(b.dataset.sub === "rd") renderReadStatus();
+  if(b.dataset.sub === "pst") renderAdminPosts();
 }));
 
 /* ===== タスク（本人分） ===== */
@@ -1241,8 +1304,8 @@ async function renderTasks(pre){
       </div>
       ${t.note ? `<div class="note">${esc(t.note)}</div>` : ""}
       ${rn ? `<div class="reworknote"><b>差し戻し</b>${esc(rn)}</div>` : ""}
-      ${linksBlock(t)}
-      <div class="row">${progressButton(t)}${readButton(t)}</div>
+      ${attachBlock("task", t.id, true)}
+      <div class="row">${progressButton(t)}${readButton("task", t.id)}</div>
     </div>`;
   };
 
@@ -1312,8 +1375,8 @@ async function renderAllTasks(pre){
             ? `<div class="reworknote"><b>差し戻し理由（${esc(nameOf(u))}）</b>${esc(rn)}</div>` : "");
         }).join("")}
       </details>` : `<div class="left">有効な担当者がいません</div>`}
-      ${linksBlock(t)}
-      ${mine ? `<div class="row">${progressButton(t)}${readButton(t)}</div>` : ""}
+      ${attachBlock("task", t.id, mine || me.isAdmin)}
+      ${mine ? `<div class="row">${progressButton(t)}${readButton("task", t.id)}</div>` : ""}
     </div>`;
   };
 
@@ -1386,6 +1449,7 @@ async function markRead(key, btn){
     });
     myReads.add(`${type}__${id}`);
     if(type === "task"){ await renderTasks(); await renderAllTasks(); }
+    else if(type === "post") await renderPosts();
     else await renderSchedules();
   }catch(e){
     console.error(e);
@@ -1676,24 +1740,7 @@ $("#btnAddTask").addEventListener("click", async () => {
     const taskRef = doc(collection(db,"tasks"));
 
     if(files.length){
-      const { m, st } = await storageApi();
-      for(let i = 0; i < files.length; i++){
-        const f = files[i];
-        const id = (self.crypto && crypto.randomUUID)
-          ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(36).slice(2);
-        const safe = f.name.replace(/[^\w.\-]+/g, "_").slice(-80);
-        const path = `taskFiles/${taskRef.id}/${me.uid}/${id}_${safe}`;
-        const ref = m.ref(st, path);
-        const up = m.uploadBytesResumable(ref, f, {
-          contentType: f.type || "application/octet-stream"
-        });
-        up.on("state_changed", (sn) => {
-          const pct = sn.totalBytes ? Math.round(sn.bytesTransferred / sn.totalBytes * 100) : 0;
-          fmsg.textContent = `送信中… ${f.name}（${i + 1}/${files.length}）${pct}%`;
-        });
-        await up;
-        uploaded.push({ ref, path, url: await m.getDownloadURL(ref), name: f.name, size: f.size });
-      }
+      uploaded.push(...await uploadFiles("task", taskRef.id, files, (t) => { fmsg.textContent = t; }));
       fmsg.textContent = "";
     }
 
@@ -1709,17 +1756,17 @@ $("#btnAddTask").addEventListener("click", async () => {
       createdBy: me.uid, createdAt: serverTimestamp()
     });
 
-    // リンクと添付は taskLinks に分けて持つ（担当者も後から追加できるようにするため）
+    // リンクと添付は attachments に分けて持つ（担当者も後から追加できるようにするため）
     for(const r of linkRows){
-      await addDoc(collection(db,"taskLinks"), {
-        taskId: taskRef.id, kind: "link",
+      await addDoc(collection(db,"attachments"), {
+        ownerType: "task", ownerId: taskRef.id, kind: "link",
         url: r.url, label: r.label || null,
         byUid: me.uid, byName: me.displayName, at: serverTimestamp()
       });
     }
     for(const u of uploaded){
-      await addDoc(collection(db,"taskLinks"), {
-        taskId: taskRef.id, kind: "file", url: u.url,
+      await addDoc(collection(db,"attachments"), {
+        ownerType: "task", ownerId: taskRef.id, kind: "file", url: u.url,
         label: u.name, storagePath: u.path, size: u.size,
         byUid: me.uid, byName: me.displayName, at: serverTimestamp()
       });
@@ -1729,8 +1776,8 @@ $("#btnAddTask").addEventListener("click", async () => {
     $("#tkApproval").checked = false; $("#tkAll").checked = false;
     $$("#tkWho .who").forEach(c => { c.checked = false; });
     $("#tkFiles").value = ""; fmsg.textContent = "";
-    resetLinkRows();
-    await loadTaskLinks();
+    resetLinkRows("#tkLinks");
+    await loadAttachments();
     await renderAdminTasks(); await renderTasks(); await renderAllTasks();
   }catch(e){
     console.error(e);
@@ -1781,7 +1828,7 @@ async function renderAdminTasks(pre){
         </div>
         ${gone > 0 ? `<div class="mini alert">停止中の担当者が${gone}人います（集計から除外しています）</div>` : ""}
         ${live.length === 0 ? `<div class="mini alert">有効な担当者がいません。このタスクは完了できません</div>` : ""}
-        ${linksBlock(t)}
+        ${attachBlock("task", t.id, true)}
         <div class="row"><button class="btn sm ghost" data-del="${t.id}">削除</button></div>
       </div>`;
       }).join("")
@@ -1804,7 +1851,7 @@ async function removeTask(taskId, title, btn){
   try{
     // 先にリンクを消す。タスクを先に消すと、taskId で辿れないリンクが
     // 画面から見えないまま残ってしまう。
-    const ls = await getDocs(query(collection(db,"taskLinks"), where("taskId","==",taskId)));
+    const ls = await getDocs(query(collection(db,"attachments"), where("ownerId","==",taskId)));
     // 添付ファイルは本体も消す。記録だけ消すと、誰からも見えないファイルが残る。
     const files = ls.docs.filter(d => d.data().storagePath);
     if(files.length){
@@ -1816,7 +1863,7 @@ async function removeTask(taskId, title, btn){
     }
     for(const d of ls.docs) await deleteDoc(d.ref);
     await deleteDoc(doc(db,"tasks",taskId));
-    await loadTaskLinks();
+    await loadAttachments();
     await renderAdminTasks(); await renderTasks(); await renderAllTasks();
   }catch(e){
     console.error(e); alert("削除できませんでした。"); btn.disabled = false;
@@ -1956,15 +2003,172 @@ async function renderAdminSchedules(){
     : `<div class="empty">予定がありません</div>`;
 }
 
+/* ===== 掲示板（FR-30） =====
+   タスクや予定に紐づかない連絡を全員に共有する場所。投稿は管理者だけ。
+   誰が読んだかは reads をそのまま使う（itemType に "post" を入れるだけで、
+   スキーマもルールも変えていない）。 */
+
+const fmtStamp = (ts) => {
+  if(!ts || !ts.seconds) return "";
+  const d = new Date(ts.seconds * 1000);
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+};
+
+async function fetchPosts(){
+  const s = await getDocs(collection(db,"posts"));
+  const arr = [];
+  s.forEach(d => arr.push({ id:d.id, ...d.data() }));
+  // 新しい順。サーバ時刻が未確定のもの（投稿直後）は先頭に置く
+  arr.sort((a,b) => ((b.createdAt && b.createdAt.seconds) || 1e18)
+                  - ((a.createdAt && a.createdAt.seconds) || 1e18));
+  return arr;
+}
+
+async function renderPosts(pre){
+  const list = pre || await fetchPosts();
+  badge($("#badgePost"), list.filter(p => !myReads.has(`post__${p.id}`)).length);
+
+  const card = (p) => `<div class="item">
+      <h3>${esc(p.title)}</h3>
+      <div class="meta"><span>${fmtStamp(p.createdAt)}</span></div>
+      ${p.body ? `<div class="note body">${esc(p.body)}</div>` : ""}
+      ${attachBlock("post", p.id, me.isAdmin)}
+      <div class="row">${readButton("post", p.id)}</div>
+    </div>`;
+
+  // 期限は設けず、直近だけを開いておく。古い分は折りたたんで残す
+  const recent = list.slice(0, 5);
+  const older  = list.slice(5);
+  $("#postList").innerHTML =
+    (recent.length ? recent.map(card).join("") : `<div class="empty">お知らせはありません</div>`) +
+    (older.length ? fold("過去のお知らせ", older.length, older.map(card).join("")) : "");
+  bindItemButtons();
+}
+
+/* ===== 管理：掲示板 ===== */
+$("#btnAddPost").addEventListener("click", async () => {
+  clearErr($("#pstErr"));
+  const title = $("#psTitle").value.trim();
+  const body  = $("#psBody").value.trim();
+  if(!title){ showErr($("#pstErr"), "題名を入力してください。"); return; }
+
+  const { rows: linkRows, bad } = readLinkRows("#psLinks");
+  if(bad){
+    showErr($("#pstErr"), "リンクは https:// または http:// で始まるURLを入力してください。"); return;
+  }
+  const files = [...($("#psFiles").files || [])];
+  const tooBig = files.filter(f => f.size > MAX_FILE);
+  if(tooBig.length){
+    showErr($("#pstErr"),
+      `${tooBig.map(f => f.name + "（" + fmtSize(f.size) + "）").join("、")} は上限の10MBを超えています。`);
+    return;
+  }
+
+  $("#btnAddPost").disabled = true;
+  const fmsg = $("#psFileMsg");
+  const uploaded = [];
+  try{
+    /* タスク作成と同じ考え方。IDを先に決めてからファイルを上げ、最後に投稿を作る。
+       先に投稿を作ると onPostCreated が通知を飛ばし、資料の無い状態で見えてしまう。 */
+    const postRef = doc(collection(db,"posts"));
+    if(files.length){
+      uploaded.push(...await uploadFiles("post", postRef.id, files, (t) => { fmsg.textContent = t; }));
+      fmsg.textContent = "";
+    }
+
+    await setDoc(postRef, {
+      title, body: body || null,
+      createdBy: me.uid, createdAt: serverTimestamp()
+    });
+
+    for(const r of linkRows){
+      await addDoc(collection(db,"attachments"), {
+        ownerType: "post", ownerId: postRef.id, kind: "link",
+        url: r.url, label: r.label || null,
+        byUid: me.uid, byName: me.displayName, at: serverTimestamp()
+      });
+    }
+    for(const u of uploaded){
+      await addDoc(collection(db,"attachments"), {
+        ownerType: "post", ownerId: postRef.id, kind: "file", url: u.url,
+        label: u.name, storagePath: u.path, size: u.size,
+        byUid: me.uid, byName: me.displayName, at: serverTimestamp()
+      });
+    }
+
+    $("#psTitle").value = ""; $("#psBody").value = "";
+    $("#psFiles").value = ""; fmsg.textContent = "";
+    resetLinkRows("#psLinks");
+    await loadAttachments();
+    await renderAdminPosts(); await renderPosts();
+  }catch(e){
+    console.error(e);
+    // 投稿を作れなかった場合、上げたファイルはどこからも参照されない
+    if(uploaded.length){
+      try{
+        const { m } = await storageApi();
+        for(const u of uploaded) await m.deleteObject(u.ref);
+      }catch(e2){ console.warn("巻き戻し:", e2); }
+    }
+    fmsg.textContent = "";
+    showErr($("#pstErr"), "投稿できませんでした。");
+  }
+  finally{ $("#btnAddPost").disabled = false; }
+});
+
+async function renderAdminPosts(){
+  const list = await fetchPosts();
+  $("#admPostList").innerHTML = list.length
+    ? list.map(p => `<div class="item">
+        <h3>${esc(p.title)}</h3>
+        <div class="meta"><span>${fmtStamp(p.createdAt)}</span></div>
+        ${p.body ? `<div class="note body">${esc(p.body)}</div>` : ""}
+        ${attachBlock("post", p.id, true)}
+        <div class="row"><button class="btn sm ghost" data-pdel="${p.id}">削除</button></div>
+      </div>`).join("")
+    : `<div class="empty">お知らせがありません</div>`;
+
+  $$("[data-pdel]").forEach(b => { b.onclick = () => {
+    const p = list.find(x => x.id === b.dataset.pdel);
+    removePost(b.dataset.pdel, p ? p.title : "", b);
+  }; });
+  bindLinkButtons();
+}
+
+// 削除できるのは管理者だけ（ルールでも制限済み）。確認記録はタスクと同様に残す。
+async function removePost(postId, title, btn){
+  if(!confirm(`「${title}」を削除します。\n取り消せません。よろしいですか？`)) return;
+  btn.disabled = true;
+  try{
+    // 先に添付を消す。投稿を先に消すと、ownerId で辿れない添付が見えないまま残る
+    const ls = await getDocs(query(collection(db,"attachments"), where("ownerId","==",postId)));
+    const files = ls.docs.filter(d => d.data().storagePath);
+    if(files.length){
+      const { m, st } = await storageApi();
+      for(const d of files){
+        try{ await m.deleteObject(m.ref(st, d.data().storagePath)); }
+        catch(e){ console.warn("ファイル本体の削除:", e); }
+      }
+    }
+    for(const d of ls.docs) await deleteDoc(d.ref);
+    await deleteDoc(doc(db,"posts",postId));
+    await loadAttachments();
+    await renderAdminPosts(); await renderPosts();
+  }catch(e){
+    console.error(e); alert("削除できませんでした。"); btn.disabled = false;
+  }
+}
+
 /* ===== 管理：確認状況 ===== */
 async function renderReadStatus(){
   const box = $("#readList");
   box.innerHTML = `<div class="spin">集計中…</div>`;
   try{
-    const [tS, sS, rS] = await Promise.all([
+    const [tS, sS, rS, posts] = await Promise.all([
       getDocs(collection(db,"tasks")),
       getDocs(collection(db,"schedules")),
-      getDocs(collection(db,"reads"))
+      getDocs(collection(db,"reads")),
+      fetchPosts()
     ]);
     const reads = [];
     rS.forEach(d => reads.push(d.data()));
@@ -2007,6 +2211,12 @@ async function renderReadStatus(){
     if(up.length){
       html += `<h2 class="sec">予定</h2>`;
       html += up.map(s => block(s.title, fmtDate(s.date), "schedule", s.id, active)).join("");
+    }
+
+    // お知らせは全員が対象。期限が無いので、件数を絞らず全部出す
+    if(posts.length){
+      html += `<h2 class="sec">お知らせ</h2>`;
+      html += posts.map(p => block(p.title, fmtStamp(p.createdAt), "post", p.id, active)).join("");
     }
 
     box.innerHTML = html || `<div class="empty">対象がありません</div>`;
