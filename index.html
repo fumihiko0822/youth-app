@@ -1292,6 +1292,13 @@ async function renderTasks(pre){
   const card = (t) => {
     const st = myProgress(t);
     const n = daysLeft(t.dueDate);
+    /* 複数人で担当しているときだけ、全体の進み具合を出す。
+       「自分は終わったが全体はまだ」が分かるようにするため。
+       出すのは人数と完了数だけで、誰が終わっていないかは出さない。
+       1人だけのタスクは「1／1 完了」が雑音になるので出さない。
+       （cacheMembers の読み込み前は0件になるが、そのときは条件から外れて
+         何も出ない。誤った数字が一瞬出ることはない） */
+    const live = activeAssignees(t);
     const cls = st === "完了" ? "" : (n !== null && n < 0 ? " due" : (n !== null && n <= 3 ? " soon" : ""));
     // 差戻理由は「差戻」のときだけ出す。再報告すると状態が変わり、自動的に消える。
     // （理由そのものは本人が削除できないため、表示側で制御する）
@@ -1302,6 +1309,8 @@ async function renderTasks(pre){
       <h3>${esc(t.title)}</h3>
       <div class="meta">
         ${statusPill(st)}
+        ${live.length > 1
+          ? `<span class="${taskDone(t) ? "yes" : "no"}">${doneCount(t)}／${live.length} 完了</span>` : ""}
         <span class="pill ${t.needsApproval ? "doing" : "todo"}">${t.needsApproval ? "承認あり" : "承認なし"}</span>
         ${t.dueDate ? `<span>${fmtDate(t.dueDate)}</span>
         <span class="${n !== null && n <= 1 ? "hot" : ""}">${dueLabel(t.dueDate)}</span>` : ""}
@@ -1320,7 +1329,7 @@ async function renderTasks(pre){
     (rest.length
       ? rest.map(card).join("")
       : (rework.length ? "" : `<div class="empty">未完了のタスクはありません</div>`)) +
-    (done.length ? fold("完了したタスク", done.length, done.map(card).join("")) : "");
+    (done.length ? fold("自分の分が終わったタスク", done.length, done.map(card).join("")) : "");
 
   badge($("#badgeTask"), attention);
   syncBadge(attention);          // ホーム画面アイコンのバッジ（対応環境のみ）
