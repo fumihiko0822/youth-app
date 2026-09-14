@@ -88,8 +88,8 @@
     border:1px solid #3b4d60;border-radius:6px;}
 
   nav.tabs{position:sticky;top:0;z-index:19;display:flex;background:#fff;border-bottom:1px solid var(--line);}
-  /* タブは4つ。375px幅で「マイタスク」＋バッジが折り返さないよう詰めている */
-  nav.tabs button{flex:1;min-width:0;background:none;padding:13px 2px;font-size:12.5px;font-weight:700;
+  /* 一般会員は3つ、管理者は4つ。375px幅でも1つ93pxあるため文字は詰めない */
+  nav.tabs button{flex:1;min-width:0;background:none;padding:13px 4px;font-size:13.5px;font-weight:700;
     color:var(--muted);border-bottom:3px solid transparent;position:relative;white-space:nowrap;}
   nav.tabs button.on{color:var(--navy);border-bottom-color:var(--red);}
   .dot{display:inline-block;min-width:17px;height:17px;line-height:17px;background:var(--red);
@@ -118,15 +118,6 @@
   .fold > summary::-webkit-details-marker{display:none;}
   .fold > summary::before{content:"▸";color:var(--red);font-size:12px;}
   .fold[open] > summary::before{content:"▾";}
-
-  /* みんなのタスク：既定はサマリ、開くと担当者ごとの進み具合 */
-  .left{font-size:12.5px;color:var(--navy2);margin-top:7px;}
-  .detail{margin-top:8px;}
-  .detail > summary{display:flex;align-items:center;gap:6px;list-style:none;cursor:pointer;
-    font-size:12.5px;font-weight:600;color:var(--muted);padding:6px 0;}
-  .detail > summary::-webkit-details-marker{display:none;}
-  .detail > summary::before{content:"▸";color:var(--red);font-size:11px;}
-  .detail[open] > summary::before{content:"▾";}
 
   .approw{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;
     padding:9px 0;border-bottom:1px dashed var(--line);}
@@ -207,7 +198,6 @@
                padding-right:max(16px, calc((100% - 1080px) / 2));}
     nav.tabs{padding-left:max(0px, calc((100% - 1080px) / 2));
              padding-right:max(0px, calc((100% - 1080px) / 2));}
-    nav.tabs button{padding:13px 4px;font-size:13.5px;}   /* 幅に余裕があるので戻す */
     .dot{min-width:18px;height:18px;line-height:18px;font-size:11px;margin-left:4px;padding:0 5px;}
 
     /* 一覧は2列。見出し・折りたたみ・空状態は横幅いっぱいに置く */
@@ -296,32 +286,26 @@
 
   <nav class="tabs">
     <button data-tab="task" class="on">タスク<span id="badgeTask" class="dot hidden">0</span></button>
-    <button data-tab="all">みんな</button>
-    <button data-tab="post">掲示板<span id="badgePost" class="dot hidden">0</span></button>
     <button data-tab="sche">予定<span id="badgeSche" class="dot hidden">0</span></button>
+    <button data-tab="post">掲示板<span id="badgePost" class="dot hidden">0</span></button>
     <button data-tab="admin" id="tabAdmin" class="hidden">管理<span id="badgeAdmin" class="dot hidden">0</span></button>
   </nav>
 
   <main>
-    <!-- マイタスク -->
+    <!-- タスク（自分が担当の分だけ） -->
     <section id="paneTask">
       <div id="pushBox" class="hidden"></div>
       <div id="taskList" class="cards"></div>
     </section>
 
-    <!-- みんな -->
-    <section id="paneAll" class="hidden">
-      <div id="allList" class="cards"></div>
+    <!-- 予定 -->
+    <section id="paneSche" class="hidden">
+      <div id="scheList" class="cards"></div>
     </section>
 
     <!-- 掲示板 -->
     <section id="panePost" class="hidden">
       <div id="postList" class="cards"></div>
-    </section>
-
-    <!-- 予定 -->
-    <section id="paneSche" class="hidden">
-      <div id="scheList" class="cards"></div>
     </section>
 
     <!-- 管理 -->
@@ -575,7 +559,7 @@ const taskDone  = (t) => {
   return ids.length > 0 && doneCount(t) === ids.length;   // 全員が完了して初めてタスク完了
 };
 
-// 自分の進捗を動かすボタン。マイタスクと「みんな」で共通に使う。
+// 自分の進捗を動かすボタン。「タスク」タブ（自分が担当の分）だけで使う。
 // 承認あり … 本人は「完了報告」まで。「完了」にできるのは管理者だけ（ルールで制限）。
 //             承認済み（完了）は本人が取り消せないのでボタンを出さない。
 // 承認なし … 本人が「完了」まで押せる。押し間違いは「未着手」に戻せる。
@@ -715,7 +699,7 @@ function openLinkBox(btn){
         byName: me.displayName,
         at: serverTimestamp()
       });
-      await refreshLinks();
+      await refreshLinks(ownerType);
     }catch(e){
       console.error(e); alert("追加できませんでした。担当者でないか、通信状況をご確認ください。");
       send.disabled = false;
@@ -775,7 +759,7 @@ function openFileBox(btn){
         label: u.name, storagePath: u.path, size: u.size,
         byUid: me.uid, byName: me.displayName, at: serverTimestamp()
       });
-      await refreshLinks();
+      await refreshLinks(ownerType);
     }catch(e){
       console.error(e);
       alert("添付できませんでした。担当者でないか、通信状況をご確認ください。");
@@ -805,16 +789,26 @@ async function deleteLink(btn){
       }
     }
     await deleteDoc(doc(db,"attachments", id));
-    await refreshLinks();
+    await refreshLinks(item && item.ownerType);
   }catch(e){
     console.error(e); alert("削除できませんでした。"); btn.disabled = false;
   }
 }
 
-async function refreshLinks(){
+/* 添付を足したり消したりしたあとの描き直し。
+   どちらに付けたかで描く先が変わる。所属を渡さないと、掲示板に添付しても
+   投稿一覧が古いままになり、入力欄が開いたまま残って失敗したように見える。 */
+async function refreshLinks(ownerType){
   await loadAttachments();
-  await renderTasks(); await renderAllTasks();
-  if(me.isAdmin) await renderAdminTasks();
+  // 所属が分からないときは両方描き直す。取りこぼすと、消したものが画面に残る。
+  if(ownerType !== "post"){
+    await renderTasks();
+    if(me.isAdmin) await renderAdminTasks();
+  }
+  if(ownerType !== "task"){
+    await renderPosts();
+    if(me.isAdmin) await renderAdminPosts();
+  }
 }
 
 function bindLinkButtons(){
@@ -1097,7 +1091,7 @@ async function listenForeground(){
     if(!(await isSupported())) return;
     onMessage(getMessaging(app), async () => {
       await loadMyReads(); await loadAttachments();
-      await renderTasks(); await renderAllTasks(); await renderSchedules();
+      await renderTasks(); await renderSchedules(); await renderPosts();
       if(me && me.isAdmin) await renderAdminTasks();
     });
     pushListening = true;
@@ -1157,9 +1151,9 @@ async function releaseToken(){
 // その中身がそのまま残る。初期化しないと、一般会員でログインし直したときに
 // 管理パネルの中身が見えてしまう。
 function resetView(){
-  // タブは必ず「マイタスク」から始める
+  // タブは必ず「タスク」から始める
   $$("nav.tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === "task"));
-  show($("#paneTask")); hide($("#paneAll")); hide($("#panePost"));
+  show($("#paneTask")); hide($("#panePost"));
   hide($("#paneSche")); hide($("#paneAdmin"));
 
   // 管理のサブタブも「メンバー」に戻す
@@ -1170,7 +1164,7 @@ function resetView(){
   // 前のセッションで描画した中身を残さない
   cacheMembers = [];
   cacheAttach = {};
-  ["#taskList","#allList","#postList","#scheList","#memList","#admTaskList","#admScheList",
+  ["#taskList","#postList","#scheList","#memList","#admTaskList","#admScheList",
    "#admPostList","#readList","#tkWho","#approvalBox","#pushBox"]
     .forEach(s => { $(s).innerHTML = ""; });
   hide($("#pushBox"));
@@ -1178,6 +1172,12 @@ function resetView(){
   $("#tkFiles").value = ""; $("#tkFileMsg").textContent = "";
   $("#psTitle").value = ""; $("#psBody").value = "";
   $("#psFiles").value = ""; $("#psFileMsg").textContent = "";
+  // 入力途中の値も残さない。特に暗証番号は、同じ端末で次に入った人に
+  // そのまま見えてしまう（画面は再読み込みされないため）。
+  $("#nmName").value = ""; $("#nmId").value = ""; $("#nmPin").value = "";
+  $("#tkTitle").value = ""; $("#tkDue").value = ""; $("#tkNote").value = "";
+  $("#scTitle").value = ""; $("#scDate").value = ""; $("#scNote").value = "";
+  ["#memErr","#tskErr","#schErr","#pstErr"].forEach(x => clearErr($(x)));
   resetLinkRows("#tkLinks"); resetLinkRows("#psLinks");
   hide($("#approvalBox"));
   hide($("#badgeTask")); hide($("#badgePost")); hide($("#badgeSche")); hide($("#badgeAdmin"));
@@ -1192,13 +1192,13 @@ async function startApp(pre){
   show($("#appView"));
 
   // 読み込み中と分かるようにする。空のままだと「タスクが無い」と誤解される。
-  ["#taskList","#allList","#scheList"].forEach(s => {
+  ["#taskList","#scheList","#postList"].forEach(s => {
     $(s).innerHTML = `<div class="empty">読み込み中…</div>`;
   });
 
-  /* マイタスクを最優先で出す。
+  /* 「タスク」タブ（自分が担当の分）を最優先で出す。
      必要なのは「自分のタスク」と「自分の確認記録」の2つだけで、
-     メンバー一覧・リンク・全タスク・予定は無くても描ける。
+     メンバー一覧・添付・予定・掲示板は無くても描ける。
      以前はそれらを全部待ってから描いていたため、待ち時間が積み上がっていた。 */
   // ログイン時に先回りで取得したものがあれば使う。無ければここで取りに行く
   const pTasks = fetchMyTasks(pre && pre.tasks);
@@ -1207,15 +1207,19 @@ async function startApp(pre){
 
   const [tasks] = await Promise.all([ pTasks, pReads ]);
   await renderTasks(tasks);          // ← ここで最初の表示
-  mark("マイタスク表示");
+  mark("タスク表示");
 
-  // ここから先は後回しでよいもの。リンクが入るのでマイタスクは描き直す。
+  // ここから先は後回しでよいもの。添付が入るのでタスク一覧は描き直す。
   await pRest;
   await renderTasks(tasks);
-  const all = await fetchAllTasks();          // 全タスクの取得は1回だけ
-  await Promise.all([ renderAllTasks(all), renderSchedules(), renderPosts() ]);
-  // 管理者は、管理タブを開く前に承認待ちの件数バッジを出しておく
-  if(me.isAdmin) await renderAdminTasks(all);
+  await Promise.all([ renderSchedules(), renderPosts() ]);
+  /* 全タスクの読み込みは管理者のときだけ。一般会員の画面には他人のタスクを
+     出さないので描画に要らず、起動時の通信が1往復減る。
+     これは表示と速度の話で、権限の話ではない。ルールは据え置きで一般会員も
+     tasks を読めるし、すぐ上の loadAttachments() は今も attachments を全件
+     引いている。端末に届く情報を絞ったつもりにならないこと。
+     管理タブを開く前に、承認待ちの件数バッジを出しておく。 */
+  if(me.isAdmin) await renderAdminTasks();
   await renderPushBox();
   listenForeground();
   mark("残りの描画完了");
@@ -1229,7 +1233,7 @@ document.addEventListener("visibilitychange", async () => {
   refreshing = true;
   try{
     await Promise.all([ loadMyReads(), loadAttachments() ]);
-    await Promise.all([ renderTasks(), renderAllTasks(), renderSchedules(), renderPosts() ]);
+    await Promise.all([ renderTasks(), renderSchedules(), renderPosts() ]);
     if(me.isAdmin) await renderAdminTasks();
     await renderPushBox();
   }catch(e){ console.warn("再読み込み:", e); }
@@ -1247,12 +1251,11 @@ $$("nav.tabs button").forEach(b => b.addEventListener("click", () => {
   $$("nav.tabs button").forEach(x => x.classList.remove("on"));
   b.classList.add("on");
   const t = b.dataset.tab;
-  hide($("#paneTask")); hide($("#paneAll")); hide($("#panePost"));
+  hide($("#paneTask")); hide($("#panePost"));
   hide($("#paneSche")); hide($("#paneAdmin"));
   if(t === "task"){ show($("#paneTask")); renderTasks(); }
-  if(t === "all"){ show($("#paneAll")); renderAllTasks(); }
   if(t === "post"){ show($("#panePost")); renderPosts(); }
-  if(t === "sche") show($("#paneSche"));
+  if(t === "sche"){ show($("#paneSche")); renderSchedules(); }
   if(t === "admin"){ show($("#paneAdmin")); loadAdmin(); }
 }));
 
@@ -1299,11 +1302,14 @@ async function renderTasks(pre){
       <h3>${esc(t.title)}</h3>
       <div class="meta">
         ${statusPill(st)}
+        <span class="pill ${t.needsApproval ? "doing" : "todo"}">${t.needsApproval ? "承認あり" : "承認なし"}</span>
         ${t.dueDate ? `<span>${fmtDate(t.dueDate)}</span>
         <span class="${n !== null && n <= 1 ? "hot" : ""}">${dueLabel(t.dueDate)}</span>` : ""}
       </div>
       ${t.note ? `<div class="note">${esc(t.note)}</div>` : ""}
       ${rn ? `<div class="reworknote"><b>差し戻し</b>${esc(rn)}</div>` : ""}
+      ${t.needsApproval && st === "完了"
+        ? `<div class="mini">管理者が承認済みです。取り消しは管理者に依頼してください</div>` : ""}
       ${attachBlock("task", t.id, true)}
       <div class="row">${progressButton(t)}${readButton("task", t.id)}</div>
     </div>`;
@@ -1321,70 +1327,17 @@ async function renderTasks(pre){
   bindItemButtons();
 }
 
-/* ===== みんなのタスク（FR-22） ===== */
-// タスクは全員が読める（絞り込みなしのクエリが通る）。
-// 並び替えは取得後にJS側で行う（複合インデックスが要るクエリを書かないため）。
-// 全タスクの取得。「みんな」と管理一覧で同じものを使う。
-// 別々に引くと、管理者の起動時に同じ問い合わせが2回走る。
+/* ===== 全タスクの取得 =====
+   管理タブの一覧と承認待ちで使う。呼び出すのは管理者だけだが、
+   ルール上はタスクを有効なメンバー全員が読める（絞り込みなしのクエリが通る）。
+   管理者だけが呼ぶのは速度のためで、制限ではない。
+   並び替えは取得後にJS側で行う（複合インデックスが要るクエリを書かないため）。 */
 async function fetchAllTasks(){
   const s = await getDocs(collection(db,"tasks"));
   const arr = [];
   s.forEach(d => arr.push({ id:d.id, ...d.data() }));
   arr.sort((a,b) => (a.dueDate||"9999").localeCompare(b.dueDate||"9999"));
   return arr;
-}
-
-async function renderAllTasks(pre){
-  const arr = pre || await fetchAllTasks();
-
-  const nameOf = (uid) => (cacheMembers.find(m => m.uid === uid)?.displayName) || "—";
-  const open = arr.filter(t => !taskDone(t));
-  const done = arr.filter(t =>  taskDone(t));
-
-  const card = (t) => {
-    const live = activeAssignees(t);
-    const mine = live.includes(me.uid);          // 操作ボタンは自分の担当分にだけ出す
-    const left = live.filter(u => (t.progress || {})[u] !== "完了");
-    const n    = daysLeft(t.dueDate);
-    const cls  = taskDone(t) ? "" : (n !== null && n < 0 ? " due" : (n !== null && n <= 3 ? " soon" : ""));
-
-    return `<div class="item${cls}">
-      <h3>${esc(t.title)}</h3>
-      <div class="meta">
-        <span class="${taskDone(t) ? "yes" : "no"}">${doneCount(t)}／${live.length} 完了</span>
-        <span class="pill ${t.needsApproval ? "doing" : "todo"}">${t.needsApproval ? "承認あり" : "承認なし"}</span>
-        ${t.dueDate ? `<span>${fmtDate(t.dueDate)}</span>
-        <span class="${n !== null && n <= 1 ? "hot" : ""}">${dueLabel(t.dueDate)}</span>` : ""}
-      </div>
-      ${t.note ? `<div class="note">${esc(t.note)}</div>` : ""}
-      ${left.length
-        ? `<div class="left">${esc(left.slice(0,2).map(nameOf).join("、"))}${
-             left.length > 2 ? ` ほか${left.length - 2}人` : ""} が未完了</div>`
-        : ""}
-      ${live.length ? `<details class="detail">
-        <summary>担当者ごとの進み具合（${live.length}人）</summary>
-        ${live.map(u => {
-          const ps = (t.progress || {})[u] || "未着手";
-          // 差戻理由は全員に見える（共有ボードのため）。差戻のときだけ出す。
-          const rn = ps === "差戻"
-            ? ((t.reworkNotes || {})[u] || "（理由が記録されていません）") : null;
-          return `<div class="readrow">
-            <span>${esc(nameOf(u))}${u === me.uid ? "（自分）" : ""}</span>
-            ${statusPill(ps)}
-          </div>` + (rn
-            ? `<div class="reworknote"><b>差し戻し理由（${esc(nameOf(u))}）</b>${esc(rn)}</div>` : "");
-        }).join("")}
-      </details>` : `<div class="left">有効な担当者がいません</div>`}
-      ${attachBlock("task", t.id, mine || me.isAdmin)}
-      ${mine ? `<div class="row">${progressButton(t)}${readButton("task", t.id)}</div>` : ""}
-    </div>`;
-  };
-
-  $("#allList").innerHTML =
-    (open.length ? open.map(card).join("") : `<div class="empty">未完了のタスクはありません</div>`) +
-    (done.length ? fold("完了したタスク", done.length, done.map(card).join("")) : "");
-
-  bindItemButtons();
 }
 
 /* ===== 予定 ===== */
@@ -1448,7 +1401,7 @@ async function markRead(key, btn){
       itemType: type, itemId: id, uid: me.uid, readAt: serverTimestamp()
     });
     myReads.add(`${type}__${id}`);
-    if(type === "task"){ await renderTasks(); await renderAllTasks(); }
+    if(type === "task") await renderTasks();
     else if(type === "post") await renderPosts();
     else await renderSchedules();
   }catch(e){
@@ -1464,7 +1417,7 @@ async function setMyProgress(taskId, value, btn){
   btn.disabled = true;
   try{
     await updateDoc(doc(db,"tasks",taskId), { [`progress.${me.uid}`]: value });
-    await renderTasks(); await renderAllTasks();
+    await renderTasks();
   }catch(e){
     console.error(e);
     alert("更新に失敗しました。");
@@ -1591,7 +1544,9 @@ function openDeleteBox(btn){
       const c = (res && res.data && res.data.counts) || {};
       box.remove();
       await loadMembers(); renderMembers(); renderAssigneePicker();
-      await renderAdminTasks(); await renderAllTasks(); await renderTasks();
+      // 添付も消えている（件数を alert で出す）。読み直さないと画面に残る
+      await loadAttachments();
+      await renderAdminTasks(); await renderTasks();
       alert(`${m.displayName} さんを削除しました。\n\n`
         + `タスク：${c.tasks || 0}件から担当を外しました\n`
         + `確認記録：${c.reads || 0}件を削除\n`
@@ -1638,7 +1593,7 @@ function renderMembers(){
       await updateDoc(doc(db,"members",m.uid), { status: next });
       // 停止・復帰で集計の分母が変わるため、タスク側も描き直す
       await loadMembers(); renderMembers(); renderAssigneePicker();
-      await renderAdminTasks(); await renderAllTasks();
+      await renderAdminTasks();
     }catch(e){ console.error(e); alert("更新に失敗しました。"); b.disabled = false; }
   });
 }
@@ -1778,7 +1733,7 @@ $("#btnAddTask").addEventListener("click", async () => {
     $("#tkFiles").value = ""; fmsg.textContent = "";
     resetLinkRows("#tkLinks");
     await loadAttachments();
-    await renderAdminTasks(); await renderTasks(); await renderAllTasks();
+    await renderAdminTasks(); await renderTasks();
   }catch(e){
     console.error(e);
     /* 途中で失敗したら、上げたファイルは消す。
@@ -1802,36 +1757,51 @@ async function renderAdminTasks(pre){
 
   renderApprovals(arr, nameOf);
 
+  /* 「みんな」タブを廃止したので、画面上で全タスクを一覧するのはここだけになった。
+     ただしこれは画面の導線の話で、閲覧権限は据え置き（ルールでは有効なメンバー
+     全員が tasks を読める）。ここに集約したのは防御ではない。
+     締切の近さ（色と残り日数）と備考は、そちらにしか出ていなかったため移した。 */
+  const card = (t) => {
+    const ids  = t.assigneeUids || [];
+    const live = activeAssignees(t);          // 集計は有効なメンバーだけ
+    const gone = ids.length - live.length;
+    const n    = daysLeft(t.dueDate);
+    const cls  = taskDone(t) ? "" : (n !== null && n < 0 ? " due" : (n !== null && n <= 3 ? " soon" : ""));
+    return `<div class="item${cls}">
+      <h3>${esc(t.title)}</h3>
+      <div class="meta">
+        <span class="${taskDone(t) ? "yes" : "no"}">${doneCount(t)}／${live.length} 完了</span>
+        <span class="pill ${t.needsApproval ? "doing" : "todo"}">${t.needsApproval ? "承認あり" : "承認なし"}</span>
+        ${t.dueDate ? `<span>${fmtDate(t.dueDate)}</span>
+        <span class="${n !== null && n <= 1 ? "hot" : ""}">${dueLabel(t.dueDate)}</span>` : ""}
+      </div>
+      ${t.note ? `<div class="note">${esc(t.note)}</div>` : ""}
+      <div style="margin-top:9px;">
+        ${live.map(u => {
+          const ps = (t.progress || {})[u] || "未着手";
+          const rn = ps === "差戻"
+            ? ((t.reworkNotes || {})[u] || "（理由が記録されていません）") : null;
+          return `<div class="readrow">
+          <span>${esc(nameOf(u))}</span>
+          ${statusPill(ps)}
+        </div>` + (rn
+          ? `<div class="reworknote"><b>差し戻し理由（${esc(nameOf(u))}）</b>${esc(rn)}</div>` : "");
+        }).join("")}
+      </div>
+      ${gone > 0 ? `<div class="mini alert">停止中の担当者が${gone}人います（集計から除外しています）</div>` : ""}
+      ${live.length === 0 ? `<div class="mini alert">有効な担当者がいません。このタスクは完了できません</div>` : ""}
+      ${attachBlock("task", t.id, true)}
+      <div class="row"><button class="btn sm ghost" data-del="${t.id}">削除</button></div>
+    </div>`;
+  };
+
+  // 完了した分は折りたたむ。混ざったままだと、件数が増えるほど探しにくくなる。
+  // 件数は summary に出るので、隠しても「何件あるか」は分かる。
+  const open = arr.filter(t => !taskDone(t));
+  const done = arr.filter(t =>  taskDone(t));
   $("#admTaskList").innerHTML = arr.length
-    ? arr.map(t => {
-        const ids  = t.assigneeUids || [];
-        const live = activeAssignees(t);          // 集計は有効なメンバーだけ
-        const gone = ids.length - live.length;
-        return `<div class="item">
-        <h3>${esc(t.title)}</h3>
-        <div class="meta">
-          <span class="${taskDone(t) ? "yes" : "no"}">${doneCount(t)}／${live.length} 完了</span>
-          <span class="pill ${t.needsApproval ? "doing" : "todo"}">${t.needsApproval ? "承認あり" : "承認なし"}</span>
-          ${t.dueDate ? `<span>${fmtDate(t.dueDate)}</span>` : ""}
-        </div>
-        <div style="margin-top:9px;">
-          ${live.map(u => {
-            const ps = (t.progress || {})[u] || "未着手";
-            const rn = ps === "差戻"
-              ? ((t.reworkNotes || {})[u] || "（理由が記録されていません）") : null;
-            return `<div class="readrow">
-            <span>${esc(nameOf(u))}</span>
-            ${statusPill(ps)}
-          </div>` + (rn
-            ? `<div class="reworknote"><b>差し戻し理由（${esc(nameOf(u))}）</b>${esc(rn)}</div>` : "");
-          }).join("")}
-        </div>
-        ${gone > 0 ? `<div class="mini alert">停止中の担当者が${gone}人います（集計から除外しています）</div>` : ""}
-        ${live.length === 0 ? `<div class="mini alert">有効な担当者がいません。このタスクは完了できません</div>` : ""}
-        ${attachBlock("task", t.id, true)}
-        <div class="row"><button class="btn sm ghost" data-del="${t.id}">削除</button></div>
-      </div>`;
-      }).join("")
+    ? (open.length ? open.map(card).join("") : `<div class="empty">未完了のタスクはありません</div>`)
+      + (done.length ? fold("完了したタスク", done.length, done.map(card).join("")) : "")
     : `<div class="empty">タスクがありません</div>`;
 
   $$("[data-del]").forEach(b => { b.onclick = () => {
@@ -1864,7 +1834,7 @@ async function removeTask(taskId, title, btn){
     for(const d of ls.docs) await deleteDoc(d.ref);
     await deleteDoc(doc(db,"tasks",taskId));
     await loadAttachments();
-    await renderAdminTasks(); await renderTasks(); await renderAllTasks();
+    await renderAdminTasks(); await renderTasks();
   }catch(e){
     console.error(e); alert("削除できませんでした。"); btn.disabled = false;
   }
@@ -1952,7 +1922,7 @@ async function approve(taskId, uids, btn){
     uids.forEach(u => { patch[`progress.${u}`] = "完了"; });
     await updateDoc(doc(db,"tasks",taskId), patch);
     await renderAdminTasks();
-    await renderTasks(); await renderAllTasks();   // 自分が担当のときは自分の一覧にも反映する
+    await renderTasks();   // 自分が担当のときは自分の一覧にも反映する
   }catch(e){
     console.error(e); alert("承認できませんでした。"); btn.disabled = false;
   }
@@ -1968,7 +1938,7 @@ async function reject(taskId, uid, reason, btn){
       [`reworkNotes.${uid}`]: reason
     });
     await renderAdminTasks();
-    await renderTasks(); await renderAllTasks();
+    await renderTasks();
   }catch(e){
     console.error(e); alert("差し戻せませんでした。"); btn.disabled = false;
   }
