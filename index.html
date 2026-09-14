@@ -125,6 +125,25 @@
   .approw .nm{font-size:13.5px;font-weight:600;}
   .approw .acts{display:flex;gap:7px;}
   /* 通知の案内 */
+  /* ダッシュボード：タスクタブの先頭に出す要約。375px幅でタイル99px×3 */
+  .dash{background:#fff;border:1px solid var(--line);border-radius:10px;
+    padding:12px 14px;margin-bottom:12px;}
+  .dash h2{font-family:var(--serif);font-size:15px;margin:0 0 9px;}
+  .dtiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;}
+  .dtile{background:var(--bg);border-radius:8px;padding:9px 4px;text-align:center;}
+  .dtile .n{display:block;font-size:22px;font-weight:700;line-height:1.2;}
+  .dtile .l{display:block;font-size:11.5px;color:var(--muted);white-space:nowrap;}
+  .dtile.on .n{color:var(--red);}
+  .dnone{background:var(--bg);border-radius:8px;padding:12px;text-align:center;
+    font-size:13px;color:var(--muted);}
+  .drow{display:flex;align-items:center;gap:8px;width:100%;background:none;
+    padding:9px 0;border-top:1px dashed var(--line);text-align:left;
+    font-size:13px;color:var(--navy);}
+  .drow .k{color:var(--muted);font-size:12px;white-space:nowrap;}
+  .drow .v{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .drow .v.mute{color:var(--muted);}
+  .drow .go{color:var(--red);font-size:11px;white-space:nowrap;}
+
   .pushbar{background:#fff;border:1px solid var(--line);border-left:5px solid var(--red);
     border-radius:10px;padding:13px 16px;margin-bottom:12px;font-size:13.5px;line-height:1.7;}
   .pushbar b{display:block;font-size:14.5px;margin-bottom:3px;}
@@ -294,6 +313,7 @@
   <main>
     <!-- タスク（自分が担当の分だけ） -->
     <section id="paneTask">
+      <div id="dashBox" class="hidden"></div>
       <div id="pushBox" class="hidden"></div>
       <div id="taskList" class="cards"></div>
     </section>
@@ -491,6 +511,12 @@ let me = null;          // { uid, displayName, isAdmin, status }
 let cacheMembers = [];  // 表示名の解決に使う（全員が読み込む）
 let cacheAttach = {};   // "種類:ID" => 添付（リンク・ファイル）の配列
 let myReads = new Set();
+/* ダッシュボードで数え直すために持っておく。新しく取りに行かないための控え。
+   null は「まだ届いていない」、[] は「届いたが0件」。区別しないと、
+   読み込み中に「予定はありません」と出してしまう。 */
+let cacheMyTasks = [];
+let cacheSche  = null;
+let cachePosts = null;
 
 /* ===== 計測 =====
    起動とログインの各区間の所要時間を開発者コンソールに出す。
@@ -1164,10 +1190,11 @@ function resetView(){
   // 前のセッションで描画した中身を残さない
   cacheMembers = [];
   cacheAttach = {};
-  ["#taskList","#postList","#scheList","#memList","#admTaskList","#admScheList",
+  cacheMyTasks = []; cacheSche = null; cachePosts = null;
+  ["#dashBox","#taskList","#postList","#scheList","#memList","#admTaskList","#admScheList",
    "#admPostList","#readList","#tkWho","#approvalBox","#pushBox"]
     .forEach(s => { $(s).innerHTML = ""; });
-  hide($("#pushBox"));
+  hide($("#dashBox")); hide($("#pushBox"));
   $("#tkAll").checked = false; $("#tkApproval").checked = false;
   $("#tkFiles").value = ""; $("#tkFileMsg").textContent = "";
   $("#psTitle").value = ""; $("#psBody").value = "";
@@ -1212,7 +1239,10 @@ async function startApp(pre){
   // ここから先は後回しでよいもの。添付が入るのでタスク一覧は描き直す。
   await pRest;
   await renderTasks(tasks);
-  await Promise.all([ renderSchedules(), renderPosts() ]);
+  /* 1回だけ取って、一覧とダッシュボードで使い回す。別々に取ると往復が2回増える。
+     ここが済むまで、ダッシュボードの予定とお知らせは「読み込み中…」のまま。 */
+  const [sche, posts] = await Promise.all([ fetchSchedules(), fetchPosts() ]);
+  await Promise.all([ renderSchedules(sche), renderPosts(posts) ]);
   /* 全タスクの読み込みは管理者のときだけ。一般会員の画面には他人のタスクを
      出さないので描画に要らず、起動時の通信が1往復減る。
      これは表示と速度の話で、権限の話ではない。ルールは据え置きで一般会員も
@@ -1247,17 +1277,18 @@ async function loadMyReads(pre){
 }
 
 /* ===== タブ ===== */
-$$("nav.tabs button").forEach(b => b.addEventListener("click", () => {
-  $$("nav.tabs button").forEach(x => x.classList.remove("on"));
-  b.classList.add("on");
-  const t = b.dataset.tab;
+// ダッシュボードの「見る ›」からも呼ぶので、タブの押下処理を関数にしてある
+function openTab(t){
+  $$("nav.tabs button").forEach(x => x.classList.toggle("on", x.dataset.tab === t));
   hide($("#paneTask")); hide($("#panePost"));
   hide($("#paneSche")); hide($("#paneAdmin"));
   if(t === "task"){ show($("#paneTask")); renderTasks(); }
   if(t === "post"){ show($("#panePost")); renderPosts(); }
   if(t === "sche"){ show($("#paneSche")); renderSchedules(); }
   if(t === "admin"){ show($("#paneAdmin")); loadAdmin(); }
-}));
+}
+$$("nav.tabs button").forEach(b =>
+  b.addEventListener("click", () => openTab(b.dataset.tab)));
 
 $$(".subtabs button").forEach(b => b.addEventListener("click", () => {
   $$(".subtabs button").forEach(x => x.classList.remove("on"));
@@ -1277,8 +1308,78 @@ async function fetchMyTasks(pre){
   return arr;
 }
 
+/* ===== ダッシュボード（タスクタブの先頭） =====
+   新しい取得はしない。すでに読んである自分のタスク・予定・お知らせを
+   数え直すだけなので、起動は遅くならない。
+   予定とお知らせは他より遅れて届くため、枠だけ先に出して中身を後から入れる。
+   空欄のまま置くと「予定が無い」と誤解されるので「読み込み中…」を出す。
+   通知バーより上に置いてあるのは、通知バーが遅れて現れるため。下に置くと、
+   バーが出た瞬間にダッシュボードとタスク一覧が押し下げられる。 */
+function renderDash(){
+  const open = cacheMyTasks.filter(t => myProgress(t) !== "完了");
+
+  /* この3つは重なる。差し戻されて・未確認で・期限切れのタスクは3つとも数える。
+     足しても件数にならないので、合計は出さない。出すと数が合わず混乱する。
+     なおタブのバッジ（差戻＋未確認）とも一致しない。バッジは「新しく来たもの」、
+     ここは「今日やること」で、数え方が違う。バッジはホーム画面のアイコンと
+     通知に連動しているため、定義を揃えにいかない。 */
+  const rework  = open.filter(t => myProgress(t) === "差戻").length;
+  const unread  = open.filter(t => !myReads.has(`task__${t.id}`)).length;
+  const overdue = open.filter(t => {
+    const n = daysLeft(t.dueDate);
+    return n !== null && n <= 0;          // 期限切れと「今日まで」
+  }).length;
+
+  const tile = (n, label) =>
+    `<div class="dtile${n > 0 ? " on" : ""}"><span class="n">${n}</span><span class="l">${label}</span></div>`;
+
+  const head = (rework + unread + overdue) === 0
+    ? `<div class="dnone">対応が必要なものはありません</div>`
+    : `<div class="dtiles">${tile(rework, "差し戻し")}${tile(unread, "未確認")}${tile(overdue, "期限切れ")}</div>`;
+
+  let postV;
+  if(cachePosts === null){
+    postV = `<span class="v mute">読み込み中…</span>`;
+  }else{
+    const n = cachePosts.filter(p => !myReads.has(`post__${p.id}`)).length;
+    postV = `<span class="v">${n > 0 ? `未確認 ${n}件` : "未確認はありません"}</span>`;
+  }
+
+  let scheV;
+  if(cacheSche === null){
+    scheV = `<span class="v mute">読み込み中…</span>`;
+  }else{
+    // 今日から7日以内。日付順に並んでいるので先頭から取ればよい
+    const week = cacheSche.filter(s => {
+      const n = daysLeft(s.date);
+      return n !== null && n >= 0 && n <= 7;
+    });
+    if(!week.length){
+      scheV = `<span class="v">今週の予定はありません</span>`;
+    }else{
+      // 3件以上あるときは残りの件数を出す。黙って切り捨てない
+      const shown = week.slice(0, 2).map(x => `${fmtDate(x.date)} ${x.title}`).join("／");
+      const more  = week.length > 2 ? `　ほか${week.length - 2}件` : "";
+      scheV = `<span class="v">${esc(shown)}${more}</span>`;
+    }
+  }
+
+  $("#dashBox").innerHTML = `<div class="dash">
+    <h2>対応が必要なもの</h2>
+    ${head}
+    <button class="drow" data-dtab="post">
+      <span class="k">お知らせ</span>${postV}<span class="go">見る ›</span></button>
+    <button class="drow" data-dtab="sche">
+      <span class="k">今週の予定</span>${scheV}<span class="go">見る ›</span></button>
+  </div>`;
+  show($("#dashBox"));
+
+  $$("[data-dtab]").forEach(b => { b.onclick = () => openTab(b.dataset.dtab); });
+}
+
 async function renderTasks(pre){
   const list = pre || await fetchMyTasks();
+  cacheMyTasks = list;
   const box = $("#taskList");
   const open   = list.filter(t => myProgress(t) !== "完了");
   const done   = list.filter(t => myProgress(t) === "完了");
@@ -1334,6 +1435,7 @@ async function renderTasks(pre){
   badge($("#badgeTask"), attention);
   syncBadge(attention);          // ホーム画面アイコンのバッジ（対応環境のみ）
   bindItemButtons();
+  renderDash();
 }
 
 /* ===== 全タスクの取得 =====
@@ -1355,11 +1457,14 @@ async function fetchSchedules(){
   const arr = [];
   s.forEach(d => arr.push({ id:d.id, ...d.data() }));
   arr.sort((a,b) => (a.date||"9999").localeCompare(b.date||"9999"));
+  cacheSche = arr;
   return arr;
 }
 
-async function renderSchedules(){
-  const all = await fetchSchedules();
+// pre を受けるのは、起動時に1回取ったものをダッシュボードと共用するため。
+// 別々に取ると往復が1回増える。
+async function renderSchedules(pre){
+  const all = pre || await fetchSchedules();
   const t = todayStr();
   const up = all.filter(s => (s.date||"") >= t);
   const past = all.filter(s => (s.date||"") < t).reverse();
@@ -1387,6 +1492,7 @@ async function renderSchedules(){
 
   badge($("#badgeSche"), unread);
   bindItemButtons();
+  renderDash();
 }
 
 function badge(el, n){
@@ -2000,11 +2106,13 @@ async function fetchPosts(){
   // 新しい順。サーバ時刻が未確定のもの（投稿直後）は先頭に置く
   arr.sort((a,b) => ((b.createdAt && b.createdAt.seconds) || 1e18)
                   - ((a.createdAt && a.createdAt.seconds) || 1e18));
+  cachePosts = arr;
   return arr;
 }
 
 async function renderPosts(pre){
   const list = pre || await fetchPosts();
+  cachePosts = list;
   badge($("#badgePost"), list.filter(p => !myReads.has(`post__${p.id}`)).length);
 
   const card = (p) => `<div class="item">
@@ -2022,6 +2130,7 @@ async function renderPosts(pre){
     (recent.length ? recent.map(card).join("") : `<div class="empty">お知らせはありません</div>`) +
     (older.length ? fold("過去のお知らせ", older.length, older.map(card).join("")) : "");
   bindItemButtons();
+  renderDash();
 }
 
 /* ===== 管理：掲示板 ===== */
